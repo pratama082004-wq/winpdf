@@ -39,7 +39,7 @@ const PURPLE_DATE_BASELINE_Y = TEMPLATE_PAGE_HEIGHT_PT - 488.96;
 // points, but it's ~4x too large relative to the surrounding stamp text
 // and overflows badly once stamped on a real drawing (where dense
 // content sits right next to/below the stamp, unlike an empty test page).
-const PURPLE_FONT_SIZE = 15;
+const PURPLE_FONT_SIZE = 14;
 
 // Orange stamp: differs between Controlled and Uncontrolled because the
 // embedded raster image's placement rect (and thus its internal scale)
