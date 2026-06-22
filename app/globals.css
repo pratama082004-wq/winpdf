@@ -1,0 +1,46 @@
+@import "tailwindcss";
+
+:root {
+  --paper: #faf9f5;
+  --paper-raised: #ffffff;
+  --ink: #1a1a17;
+  --ink-soft: #5a5750;
+  --ink-faint: #8c8980;
+  --line: #ddd9cd;
+  --line-strong: #1a1a17;
+  --stamp: #b23b2e;
+  --stamp-soft: #f1e3df;
+  --ok: #2f6b4f;
+  --ok-soft: #e3ede7;
+
+  --background: var(--paper);
+  --foreground: var(--ink);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-body);
+  --font-mono: var(--font-tech);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-body), Arial, Helvetica, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+input[type="file"].hidden {
+  display: none;
+}
+
+
