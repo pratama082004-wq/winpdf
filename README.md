@@ -5,7 +5,7 @@ Aplikasi web untuk membubuhkan watermark ke banyak file PDF sekaligus, di mana w
 ## Cara kerja
 
 1. Setiap halaman PDF asli dirender ulang menjadi gambar resolusi tinggi (300 DPI) menggunakan `pdfjs-dist` + `@napi-rs/canvas`.
-2. Jika ada berkas watermark (gambar PNG/JPG transparan, atau PDF satu halaman), watermark tersebut ditempelkan di atas gambar halaman — selalu dengan orientasi landscape, di-skalakan secara proporsional agar pas di halaman apa pun (portrait maupun landscape).
+2. Jika ada berkas watermark (gambar PNG/JPG transparan, atau PDF satu halaman), watermark tersebut otomatis di-*crop* dulu ke area kontennya saja (membuang margin transparan di sekitarnya), lalu ditempelkan di atas gambar halaman — selalu dengan orientasi landscape, di-skalakan secara proporsional agar pas di halaman apa pun (portrait maupun landscape).
 3. Gambar gabungan (halaman + watermark) disatukan kembali menjadi PDF baru menggunakan `pdf-lib`. Karena seluruh halaman sekarang berupa satu gambar utuh, watermark tidak bisa dipisahkan dari isi dokumen.
 4. Jika tidak ada berkas watermark yang diunggah, dokumen tetap diproses ulang (dirasterisasi) tanpa watermark — berguna untuk "mengunci" dokumen yang sudah memiliki watermark sebelumnya.
 

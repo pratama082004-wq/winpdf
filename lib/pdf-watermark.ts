@@ -30,6 +30,113 @@ export type WatermarkAsset = {
 };
 
 /**
+ * Renders the first page of a PDF with a transparent background — used
+ * specifically for watermark PDFs, since pdf.js otherwise paints an opaque
+ * white background by default.
+ */
+async function renderPdfPageTransparent(
+  pdfBytes: Uint8Array,
+  dpi: number
+): Promise<RasterPage> {
+  const loadingTask = pdfjsLib.getDocument({
+    data: pdfBytes.slice(),
+    standardFontDataUrl: STANDARD_FONT_DATA_URL,
+    cMapUrl: CMAPS_URL,
+    cMapPacked: true,
+  });
+  const doc = await loadingTask.promise;
+
+  try {
+    const page = await doc.getPage(1);
+    const scale = dpi / PDF_BASE_DPI;
+    const viewport = page.getViewport({ scale });
+
+    const canvas = createCanvas(Math.ceil(viewport.width), Math.ceil(viewport.height));
+    const context = canvas.getContext("2d");
+    context.clearRect(0, 0, canvas.width, canvas.height);
+
+    await page.render({
+      canvasContext: context,
+      viewport,
+      background: "rgba(0,0,0,0)",
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any).promise;
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const buffer: Buffer = (canvas as any).toBuffer("image/png");
+
+    return {
+      buffer,
+      widthPx: canvas.width,
+      heightPx: canvas.height,
+      widthPt: viewport.width / scale,
+      heightPt: viewport.height / scale,
+    };
+  } finally {
+    await doc.cleanup();
+    await loadingTask.destroy();
+  }
+}
+
+/**
+ * Crops a PNG buffer down to the bounding box of its non-transparent
+ * content, removing empty margins. If the image has no transparency at
+ * all (e.g. a flat opaque image), it's returned unchanged.
+ */
+async function autoCropToContent(buffer: Buffer): Promise<{
+  buffer: Buffer;
+  widthPx: number;
+  heightPx: number;
+}> {
+  const img = await loadImage(buffer);
+  const probe = createCanvas(img.width, img.height);
+  const probeCtx = probe.getContext("2d");
+  probeCtx.drawImage(img, 0, 0);
+  const { data } = probeCtx.getImageData(0, 0, img.width, img.height);
+
+  let minX = img.width;
+  let minY = img.height;
+  let maxX = -1;
+  let maxY = -1;
+
+  for (let y = 0; y < img.height; y++) {
+    for (let x = 0; x < img.width; x++) {
+      const alpha = data[(y * img.width + x) * 4 + 3];
+      if (alpha > 4) {
+        // small threshold to ignore near-invisible anti-aliasing fuzz
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+
+  // No transparent pixels found at all (fully opaque image) — nothing to crop.
+  if (maxX < 0 || maxY < 0) {
+    return { buffer, widthPx: img.width, heightPx: img.height };
+  }
+
+  const cropW = maxX - minX + 1;
+  const cropH = maxY - minY + 1;
+  // If the detected content is the entire canvas, skip cropping.
+  if (minX === 0 && minY === 0 && cropW === img.width && cropH === img.height) {
+    return { buffer, widthPx: img.width, heightPx: img.height };
+  }
+
+  const cropped = createCanvas(cropW, cropH);
+  const croppedCtx = cropped.getContext("2d");
+  croppedCtx.drawImage(img, -minX, -minY);
+
+  return {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    buffer: (cropped as any).toBuffer("image/png"),
+    widthPx: cropW,
+    heightPx: cropH,
+  };
+}
+
+/**
  * Renders a single page of a PDF (given as bytes) to a high-resolution
  * raster image (PNG) using pdf.js + a fresh @napi-rs/canvas surface.
  */
@@ -98,6 +205,13 @@ export async function getPdfPageCount(pdfBytes: Uint8Array): Promise<number> {
 /**
  * Loads a watermark asset, which can be a PNG/JPG image, or a single-page
  * PDF (rasterized at the same target DPI for consistent sharpness).
+ *
+ * For PDF watermarks, the page is rendered with a transparent background
+ * and then auto-cropped to its actual content — many watermark PDFs are
+ * exported on a full page with the logo placed off-center, and without
+ * cropping, the surrounding empty margins would get scaled along with it,
+ * shrinking the visible logo and throwing off its centering once placed
+ * onto a document page.
  */
 export async function loadWatermarkAsset(
   fileBytes: Uint8Array,
@@ -106,16 +220,21 @@ export async function loadWatermarkAsset(
 ): Promise<WatermarkAsset> {
   const lower = fileName.toLowerCase();
   if (lower.endsWith(".pdf")) {
-    const raster = await renderPdfPageToRaster(fileBytes, 0, dpi);
+    const raster = await renderPdfPageTransparent(fileBytes, dpi);
+    const cropped = await autoCropToContent(raster.buffer);
     return {
-      buffer: raster.buffer,
-      widthPx: raster.widthPx,
-      heightPx: raster.heightPx,
+      buffer: cropped.buffer,
+      widthPx: cropped.widthPx,
+      heightPx: cropped.heightPx,
     };
   }
   const buffer = Buffer.from(fileBytes);
-  const img = await loadImage(buffer);
-  return { buffer, widthPx: img.width, heightPx: img.height };
+  const cropped = await autoCropToContent(buffer);
+  return {
+    buffer: cropped.buffer,
+    widthPx: cropped.widthPx,
+    heightPx: cropped.heightPx,
+  };
 }
 
 /**
