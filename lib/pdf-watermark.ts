@@ -1,4 +1,4 @@
-import { createCanvas, loadImage } from "@napi-rs/canvas";
+import { Canvas, createCanvas, loadImage } from "@napi-rs/canvas";
 import { PDFDocument } from "pdf-lib";
 import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
 import path from "path";
@@ -271,6 +271,13 @@ export async function compositeWatermarkOnRaster(
   const ctx = canvas.getContext("2d");
 
   const baseImg = await loadImage(pageRaster.buffer);
+  // The base technical drawing is drawn at a 1:1 pixel scale (same
+  // dimensions it was rasterized at), so there's nothing to resample —
+  // smoothing here only softens otherwise-crisp CAD line edges for no
+  // benefit. Disabling it keeps thin drawing lines (dimension lines,
+  // leader lines, hatching) as sharp as the original rasterization,
+  // instead of losing some of their contrast to filtering.
+  ctx.imageSmoothingEnabled = false;
   ctx.drawImage(baseImg, 0, 0, pageRaster.widthPx, pageRaster.heightPx);
 
   const wmImg = await loadImage(watermark.buffer);
@@ -288,10 +295,108 @@ export async function compositeWatermarkOnRaster(
   const dx = (pageRaster.widthPx - drawW) / 2;
   const dy = (pageRaster.heightPx - drawH) / 2;
 
+  // The watermark, unlike the base drawing, is usually being scaled
+  // (fitScale != 1), so smoothing is actually wanted here — turn it back
+  // on at the highest quality to avoid jagged edges on the logo/text.
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
   ctx.globalAlpha = opacity;
   ctx.drawImage(wmImg, dx, dy, drawW, drawH);
   ctx.globalAlpha = 1;
 
+  sharpenRasterLines(canvas);
+
+  return canvas.toBuffer("image/png");
+}
+
+/**
+ * Darkens/thickens dark line-art by a small amount, to counteract a
+ * specific, otherwise-unavoidable visual side effect of the "rasterize
+ * everything" approach this tool requires (see module docs): a vector PDF's
+ * thin lines (dimension lines, leaders, hatching — typically 0.25–0.5pt)
+ * stay crisp at *any* zoom level because they're redrawn from their exact
+ * vector definition every time. Once flattened into a fixed-resolution
+ * raster, those same lines inevitably look softer/grayer whenever a PDF
+ * viewer displays the page at a size other than the exact rasterization
+ * DPI (which is the common case — e.g. viewing a 300 DPI raster at a
+ * typical ~100 DPI on-screen zoom). This isn't fixable by rasterizing at
+ * a higher DPI; reference renders at 300/450/600 DPI and downscaled to a
+ * common viewing size all show the same drop in line darkness, because
+ * the loss happens during the *viewer's* downscale, not ours.
+ *
+ * The fix applied here is a min-filter (each pixel takes the darkest
+ * value in its NxN neighborhood, per channel) run *before* the page ever
+ * reaches a viewer — it thickens dark line-art by ~1px at the
+ * rasterization DPI, which is imperceptible at that resolution but
+ * meaningfully restores how solid the lines look once downscaled for
+ * normal viewing. A 3x3 neighborhood was chosen empirically: it brought a
+ * test page's measured line-darkness back in line with the original
+ * vector rendering's; a 5x5 neighborhood overshot and visibly thickened
+ * lines beyond their original weight.
+ *
+ * Applied to the whole flattened page (after any watermark composite),
+ * not just the source drawing — but only dark pixels move (each channel
+ * can only get darker, never lighter), so pale watermark elements stay
+ * exactly as faint as they were designed to be; this only restores
+ * contrast that the drawing's own dark lines lose to viewer downscaling.
+ */
+function sharpenRasterLines(canvas: Canvas): void {
+  const ctx = canvas.getContext("2d");
+  const { width, height } = canvas;
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const src = imageData.data;
+  const out = new Uint8ClampedArray(src.length);
+
+  // 3x3 min filter per RGB channel (alpha passed through unchanged — the
+  // pages this runs on are always fully opaque, so alpha is always 255).
+  for (let y = 0; y < height; y++) {
+    const yStart = Math.max(0, y - 1);
+    const yEnd = Math.min(height - 1, y + 1);
+    for (let x = 0; x < width; x++) {
+      const xStart = Math.max(0, x - 1);
+      const xEnd = Math.min(width - 1, x + 1);
+
+      let minR = 255;
+      let minG = 255;
+      let minB = 255;
+      for (let ny = yStart; ny <= yEnd; ny++) {
+        const rowOffset = ny * width;
+        for (let nx = xStart; nx <= xEnd; nx++) {
+          const idx = (rowOffset + nx) * 4;
+          const r = src[idx];
+          const g = src[idx + 1];
+          const b = src[idx + 2];
+          if (r < minR) minR = r;
+          if (g < minG) minG = g;
+          if (b < minB) minB = b;
+        }
+      }
+
+      const outIdx = (y * width + x) * 4;
+      out[outIdx] = minR;
+      out[outIdx + 1] = minG;
+      out[outIdx + 2] = minB;
+      out[outIdx + 3] = src[outIdx + 3];
+    }
+  }
+
+  imageData.data.set(out);
+  ctx.putImageData(imageData, 0, 0);
+}
+
+/**
+ * Applies {@link sharpenRasterLines} to a standalone PNG buffer (the
+ * no-watermark case, where the page never goes through
+ * {@link compositeWatermarkOnRaster} and so wouldn't otherwise get the
+ * same line-darkening pass).
+ */
+async function sharpenPngBuffer(pngBuffer: Buffer): Promise<Buffer> {
+  const img = await loadImage(pngBuffer);
+  const canvas = createCanvas(img.width, img.height);
+  const ctx = canvas.getContext("2d");
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(img, 0, 0);
+  sharpenRasterLines(canvas);
   return canvas.toBuffer("image/png");
 }
 
@@ -327,7 +432,7 @@ export async function watermarkPdf(
       ? await compositeWatermarkOnRaster(raster, watermark, {
           opacity: opts.opacity,
         })
-      : raster.buffer;
+      : await sharpenPngBuffer(raster.buffer);
     opts.onProgress?.(i + 1, totalPages);
     return { buffer: finalPngBuffer, widthPt: raster.widthPt, heightPt: raster.heightPt };
   };

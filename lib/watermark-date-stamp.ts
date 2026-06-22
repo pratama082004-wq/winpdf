@@ -32,17 +32,31 @@ const TEMPLATE_PAGE_HEIGHT_PT = 595;
 // (top-based, from page top) -> convert to bottom-based: pageHeight - y
 const PURPLE_DATE_X = 174.43 + 2; // a couple points right of "WINTEQ"
 const PURPLE_DATE_BASELINE_Y = TEMPLATE_PAGE_HEIGHT_PT - 488.96;
-const PURPLE_FONT_SIZE = 36;
+// Calibrated against a real customer example: the date text reads as
+// roughly 1.5x the cap-height of the "K&DM WINTEQ" line next to it
+// (which has a measured bbox height of ~9pt), not a flat 36pt — 36pt
+// was based on a misreading of the customer's "font size 36" as PDF
+// points, but it's ~4x too large relative to the surrounding stamp text
+// and overflows badly once stamped on a real drawing (where dense
+// content sits right next to/below the stamp, unlike an empty test page).
+const PURPLE_FONT_SIZE = 14;
 
 // Orange stamp: differs between Controlled and Uncontrolled because the
 // embedded raster image's placement rect (and thus its internal scale)
 // differs slightly between the two files.
 type OrangeCoord = { x: number; baselineYTopBased: number };
 const ORANGE_DATE_BY_KIND: Record<"controlled" | "uncontrolled", OrangeCoord> = {
-  controlled: { x: 72.99 + 1, baselineYTopBased: 553.45 + 4 },
-  uncontrolled: { x: 64.35 + 3, baselineYTopBased: 561.27 + 4 },
+  controlled: { x: 72.99 + 1, baselineYTopBased: 553.45 + 1.5 },
+  uncontrolled: { x: 64.35 + 3, baselineYTopBased: 561.27 + 1 },
 };
-const ORANGE_FONT_SIZE = 14;
+// Same calibration approach as the purple stamp: measured the "DATE :"
+// label's own text height inside the embedded raster image (in PDF pt,
+// via the image's placement scale), then applied the same ~1.5x ratio
+// used for the purple stamp. This works out to roughly 5pt — much
+// smaller than the originally-assumed 14pt, which was sized to almost
+// exactly fill the DATE row's full height with no margin, causing the
+// text to bleed into the row above/below once on a real (non-blank) page.
+const ORANGE_FONT_SIZE = 5;
 
 // Stamped text color: sampled directly from a customer-provided example of
 // the finished result. The date reads as a neutral mid-gray (not tinted

@@ -31,6 +31,10 @@ export default function Home() {
     setJobs((prev) => prev.filter((j) => j.id !== id));
   }
 
+  function clearAllJobs() {
+    setJobs([]);
+  }
+
   function triggerDownload(blob: Blob, name: string) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -162,9 +166,41 @@ export default function Home() {
         </p>
 
         <section style={{ marginBottom: "1.75rem" }}>
-          <p style={{ fontSize: "0.95rem", fontWeight: 500, color: "var(--ink)", marginBottom: "0.7rem" }}>
-            1. PDF Gambar Teknik
-          </p>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              marginBottom: "0.7rem",
+            }}
+          >
+            <p style={{ fontSize: "0.95rem", fontWeight: 500, color: "var(--ink)" }}>
+              1. PDF Gambar Teknik
+            </p>
+            {hasJobs && !isRunning && (
+              <button
+                onClick={clearAllJobs}
+                style={{
+                  fontSize: "0.8rem",
+                  fontWeight: 600,
+                  color: "var(--ink-faint)",
+                  background: "none",
+                  border: "none",
+                  cursor: "pointer",
+                  padding: "0.2rem 0.3rem",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "0.3rem",
+                }}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M3 12a9 9 0 1 0 2.64-6.36" strokeLinecap="round" strokeLinejoin="round" />
+                  <path d="M3 4v5h5" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                Kosongkan
+              </button>
+            )}
+          </div>
           <PdfTargetDropzone
             jobs={jobs}
             onFilesAdded={addFiles}
