@@ -31,12 +31,11 @@ const TEMPLATE_PAGE_HEIGHT_PT = 595;
 // Measured top-based y of the "K&DM WINTEQ" text baseline: 488.96
 // (top-based, from page top) -> convert to bottom-based: pageHeight - y
 // Verified against a real customer drawing (PIN, 612027-01-02-06-08-R1):
-// at the original +2pt offset, the date text's left edge landed flush
-// against (almost touching) the right edge of "WINTEQ" with no visible
-// gap. Pushed out to +12pt to create a clearly visible gap, while still
-// leaving ~50pt of clearance before the stamp box's right border (~295pt)
-// for the date text's ~70pt width at 14pt Helvetica.
-const PURPLE_DATE_X = 174.43 + 12;
+// at +12pt, the gap from "WINTEQ" to the date was visible but still read
+// as crowded/close in practice. Pushed further out to +22pt for a clearly
+// comfortable gap; the date (~70pt wide at 14pt) still ends well short
+// (~24pt of clearance) of the stamp box's right border (~290pt).
+const PURPLE_DATE_X = 174.43 + 22;
 // Nudged up 3pt from the raw "K&DM WINTEQ" baseline (488.96): at 14pt,
 // Helvetica numerals extend visibly below their own baseline (descender
 // space numerals don't normally use, but font metrics still reserve it),
@@ -56,41 +55,20 @@ const PURPLE_FONT_SIZE = 14;
 // Orange stamp: differs between Controlled and Uncontrolled because the
 // embedded raster image's placement rect (and thus its internal scale)
 // differs slightly between the two files.
-// Verified against a real customer drawing (PIN, 612027-01-02-06-08-R1,
-// Uncontrolled template): at the original offsets, the stamped date
-// landed almost flush against the "DATE :" label itself (near-zero gap)
-// and also overlapped a real drawing's tolerance-table column directly
-// behind it. Pushed several more points right than before to clear the
-// label with a visible gap; remaining overlap with the table (unavoidable
-// since table layouts vary by drawing — see ORANGE_DATE_BG_* below) is
-// handled with a background patch instead of positioning alone.
+// Verified against a real customer drawing (PIN, 612027-01-02-06-08-R1):
+// the +10/+12pt offsets below give a clean, legible gap from "DATE :" on
+// both templates in production (rasterize + composite), confirmed against
+// actual output — no background patch needed.
 type OrangeCoord = { x: number; baselineYTopBased: number };
 const ORANGE_DATE_BY_KIND: Record<"controlled" | "uncontrolled", OrangeCoord> = {
   controlled: { x: 72.99 + 10, baselineYTopBased: 553.45 + 1.5 },
   uncontrolled: { x: 64.35 + 12, baselineYTopBased: 561.27 + 1 },
 };
-// Same calibration approach as the purple stamp: measured the "DATE :"
-// label's own text height inside the embedded raster image (in PDF pt,
-// via the image's placement scale), then applied the same ~1.5x ratio
-// used for the purple stamp. This works out to roughly 5pt — much
-// smaller than the originally-assumed 14pt, which was sized to almost
-// exactly fill the DATE row's full height with no margin, causing the
-// text to bleed into the row above/below once on a real (non-blank) page.
-const ORANGE_FONT_SIZE = 5;
-
-// Background patch behind the orange stamp's date text. Unlike the purple
-// stamp (which sits in empty space within its box), the orange stamp's
-// "DATE :" row lands low on the page where real drawings commonly place a
-// dense tolerance table — verified on an actual customer drawing where the
-// stamped date became unreadable, merged visually with bold black table
-// text and a table border line directly behind/through it. A solid-ish
-// light patch keeps the date legible without having to dodge the table,
-// which isn't reliably possible since table layouts vary by drawing.
-// 0.85 opacity fully masks bold black table text underneath while still
-// reading as a light patch rather than an opaque white box.
-const ORANGE_DATE_BG_COLOR = rgb(1, 1, 1);
-const ORANGE_DATE_BG_OPACITY = 0.85;
-const ORANGE_DATE_BG_PADDING_PT = 1.5;
+// Bumped up from the original 5pt: confirmed-good positioning meant there
+// was room to make the date noticeably bigger and bolder without it
+// crowding "DATE :" or overflowing its row, addressing reports that the
+// stamped date was legible but too small/faint to read comfortably.
+const ORANGE_FONT_SIZE = 7;
 
 // Stamped text color: sampled directly from a customer-provided example of
 // the finished result. The date reads as a neutral mid-gray (not tinted
@@ -99,6 +77,13 @@ const ORANGE_DATE_BG_PADDING_PT = 1.5;
 // mean in practice once compared against a real example.
 const DATE_TEXT_COLOR = rgb(0, 0, 0);
 const DATE_TEXT_OPACITY = 0.25;
+// Orange stamp's date uses a higher opacity than the purple stamp's: once
+// the positioning issue was fixed, the customer reported the date was
+// legible but still too faint at the same 0.25 used on the purple stamp —
+// likely because the orange stamp's row sits on plainer background, so a
+// bit more contrast reads as appropriately "stamped" rather than washed
+// out, without going fully opaque/black.
+const ORANGE_DATE_TEXT_OPACITY = 0.45;
 
 export type WatermarkKind = "user" | "controlled" | "uncontrolled" | "unknown";
 
@@ -230,31 +215,13 @@ export async function stampDateOnWatermark(
     const orangeFontSizeScaled = ORANGE_FONT_SIZE * Math.min(scaleX, scaleY);
     const orangeX = coord.x * scaleX;
 
-    // Background patch behind the date (see ORANGE_DATE_BG_* docs above):
-    // this stamp's row commonly lands on top of a real drawing's tolerance
-    // table, so the patch keeps the date readable without depending on
-    // table layout. Sized from the actual text metrics (not a fixed box)
-    // so it hugs the date text rather than over- or under-covering it.
-    const textWidth = font.widthOfTextAtSize(dateText, orangeFontSizeScaled);
-    const ascent = font.heightAtSize(orangeFontSizeScaled, { descender: false });
-    const descent = font.heightAtSize(orangeFontSizeScaled) - ascent;
-    const pad = ORANGE_DATE_BG_PADDING_PT * Math.min(scaleX, scaleY);
-    page.drawRectangle({
-      x: orangeX - pad,
-      y: baselineYBottomBased - descent - pad,
-      width: textWidth + pad * 2,
-      height: ascent + descent + pad * 2,
-      color: ORANGE_DATE_BG_COLOR,
-      opacity: ORANGE_DATE_BG_OPACITY,
-    });
-
     page.drawText(dateText, {
       x: orangeX,
       y: baselineYBottomBased,
       size: orangeFontSizeScaled,
       font,
       color: DATE_TEXT_COLOR,
-      opacity: DATE_TEXT_OPACITY,
+      opacity: ORANGE_DATE_TEXT_OPACITY,
     });
   }
 
