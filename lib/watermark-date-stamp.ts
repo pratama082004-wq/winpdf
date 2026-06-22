@@ -31,7 +31,13 @@ const TEMPLATE_PAGE_HEIGHT_PT = 595;
 // Measured top-based y of the "K&DM WINTEQ" text baseline: 488.96
 // (top-based, from page top) -> convert to bottom-based: pageHeight - y
 const PURPLE_DATE_X = 174.43 + 2; // a couple points right of "WINTEQ"
-const PURPLE_DATE_BASELINE_Y = TEMPLATE_PAGE_HEIGHT_PT - 488.96;
+// Nudged up 3pt from the raw "K&DM WINTEQ" baseline (488.96): at 14pt,
+// Helvetica numerals extend visibly below their own baseline (descender
+// space numerals don't normally use, but font metrics still reserve it),
+// which was enough to make the date clip into the stamp box's bottom
+// border / the table row directly below it on real drawings. Verified
+// against an actual flagged PDF that this 3pt margin clears the border.
+const PURPLE_DATE_BASELINE_Y = TEMPLATE_PAGE_HEIGHT_PT - (488.96 - 3);
 // Calibrated against a real customer example: the date text reads as
 // roughly 1.5x the cap-height of the "K&DM WINTEQ" line next to it
 // (which has a measured bbox height of ~9pt), not a flat 36pt — 36pt
