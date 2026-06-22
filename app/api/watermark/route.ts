@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { loadWatermarkAsset, watermarkPdf } from "@/lib/pdf-watermark";
+import { stampDateOnWatermark } from "@/lib/watermark-date-stamp";
 
 // Allow this route to run as long as Vercel's plan permits, since
 // rasterizing at 300 DPI for many pages can take a while.
@@ -23,7 +24,23 @@ export async function POST(req: NextRequest) {
 
     let watermarkAsset = null;
     if (watermarkFile && watermarkFile instanceof File && watermarkFile.size > 0) {
-      const wmBytes = new Uint8Array(await watermarkFile.arrayBuffer());
+      let wmBytes = new Uint8Array(await watermarkFile.arrayBuffer());
+
+      // Auto-stamp today's date onto known WINTEQ watermark templates
+      // (User / Controlled / Uncontrolled) before it gets rasterized and
+      // composited onto the drawing — mirrors what the customer otherwise
+      // does by hand every day in iLovePDF. Only applies to PDF watermarks;
+      // PNG/JPG watermarks pass through untouched since the stamp
+      // detection and coordinates are specific to the customer's PDF
+      // templates.
+      const isPdfWatermark =
+        watermarkFile.type === "application/pdf" ||
+        watermarkFile.name.toLowerCase().endsWith(".pdf");
+      if (isPdfWatermark) {
+        const stamped = await stampDateOnWatermark(wmBytes, watermarkFile.name);
+        wmBytes = stamped.bytes;
+      }
+
       watermarkAsset = await loadWatermarkAsset(wmBytes, watermarkFile.name, 300);
     }
 
