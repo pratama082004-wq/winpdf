@@ -223,14 +223,25 @@ export async function getPdfPageCount(pdfBytes: Uint8Array): Promise<number> {
 export async function loadWatermarkAsset(
   fileBytes: Uint8Array,
   fileName: string,
-  dpi: number
+  dpi: number,
+  opts: { clarityGamma?: number } = {}
 ): Promise<WatermarkAsset> {
+  // Default gamma boost: the source watermark PDF often bakes in fairly
+  // low opacity for some elements (e.g. a small corner stamp), which can
+  // read as a bit fainter than intended once flattened into a raster.
+  // 0.85 is a light touch — it nudges faint elements up without visibly
+  // altering elements whose opacity was already accurate. Applied once
+  // here (not per-page) since the watermark is identical across pages.
+  const clarityGamma = opts.clarityGamma ?? 0.85;
+
   const lower = fileName.toLowerCase();
   if (lower.endsWith(".pdf")) {
     const raster = await renderPdfPageTransparent(fileBytes, dpi);
     const cropped = await autoCropToContent(raster.buffer);
+    const finalBuffer =
+      clarityGamma !== 1 ? await boostWatermarkAlpha(cropped.buffer, clarityGamma) : cropped.buffer;
     return {
-      buffer: cropped.buffer,
+      buffer: finalBuffer,
       widthPx: cropped.widthPx,
       heightPx: cropped.heightPx,
     };
@@ -243,40 +254,68 @@ export async function loadWatermarkAsset(
   // to the target DPI so it occupies the same physical size a PDF
   // watermark of equivalent point-dimensions would.
   const dpiScale = dpi / PDF_BASE_DPI;
-  if (dpiScale === 1) {
-    return { buffer: cropped.buffer, widthPx: cropped.widthPx, heightPx: cropped.heightPx };
+  let scaledBuffer = cropped.buffer;
+  let scaledW = cropped.widthPx;
+  let scaledH = cropped.heightPx;
+
+  if (dpiScale !== 1) {
+    scaledW = Math.round(cropped.widthPx * dpiScale);
+    scaledH = Math.round(cropped.heightPx * dpiScale);
+    const img = await loadImage(cropped.buffer);
+    const scaledCanvas = createCanvas(scaledW, scaledH);
+    const scaledCtx = scaledCanvas.getContext("2d");
+    scaledCtx.drawImage(img, 0, 0, scaledW, scaledH);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    scaledBuffer = (scaledCanvas as any).toBuffer("image/png");
   }
 
-  const scaledW = Math.round(cropped.widthPx * dpiScale);
-  const scaledH = Math.round(cropped.heightPx * dpiScale);
-  const img = await loadImage(cropped.buffer);
-  const scaledCanvas = createCanvas(scaledW, scaledH);
-  const scaledCtx = scaledCanvas.getContext("2d");
-  scaledCtx.drawImage(img, 0, 0, scaledW, scaledH);
+  const finalBuffer =
+    clarityGamma !== 1 ? await boostWatermarkAlpha(scaledBuffer, clarityGamma) : scaledBuffer;
 
-  return {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    buffer: (scaledCanvas as any).toBuffer("image/png"),
-    widthPx: scaledW,
-    heightPx: scaledH,
-  };
+  return { buffer: finalBuffer, widthPx: scaledW, heightPx: scaledH };
+}
+
+/**
+ * Boosts a watermark's alpha channel using a gamma curve, making it
+ * visually clearer/more solid without changing its shape or color.
+ *
+ * Many watermark PDFs (e.g. exported from CAD/PLM tools) bake in very low
+ * opacity (≈0.1–0.2) for a subtle on-screen look, which becomes hard to
+ * see once flattened into a rasterized page. A gamma < 1 raises low alpha
+ * values proportionally more than high ones, so faint areas become much
+ * more visible while already-solid strokes don't blow out past full
+ * opacity.
+ */
+async function boostWatermarkAlpha(buffer: Buffer, gamma: number): Promise<Buffer> {
+  const img = await loadImage(buffer);
+  const canvas = createCanvas(img.width, img.height);
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(img, 0, 0);
+
+  const imageData = ctx.getImageData(0, 0, img.width, img.height);
+  const data = imageData.data;
+  for (let i = 3; i < data.length; i += 4) {
+    const a = data[i] / 255;
+    if (a > 0 && a < 1) {
+      data[i] = Math.round(Math.pow(a, gamma) * 255);
+    }
+  }
+  ctx.putImageData(imageData, 0, 0);
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (canvas as any).toBuffer("image/png");
 }
 
 /**
  * Composites a watermark onto a rasterized page.
  *
- * Since both the page and the watermark are rasterized at the same DPI,
- * 1 watermark pixel already represents the same physical size as 1 page
- * pixel. So the watermark is stamped at its native size (no scaling),
- * centered on the page — exactly how a tool like pdftk stamps a
- * same-sized watermark PDF onto a document: the watermark's own design
- * (e.g. sized for an A4 sheet) is trusted as-is, rather than being
- * stretched or shrunk to "fit" an arbitrary content box.
- *
- * The only exception is when the page is physically *smaller* than the
- * watermark (e.g. a watermark designed for A4 stamped onto an A5 page) —
- * in that case the watermark is scaled down just enough to fit within
- * the page, so nothing gets clipped.
+ * The watermark is always scaled to "fit" (contain) the page — filling as
+ * much of the page as possible while preserving its own aspect ratio —
+ * exactly how a tool like pdftk stamps a watermark PDF onto a document of
+ * a different size: the watermark scales up or down to the page, rather
+ * than only ever being trusted at native size. This is what makes a
+ * watermark designed on an A4 canvas still fill an A3 page properly,
+ * instead of appearing small and centered.
  */
 export async function compositeWatermarkOnRaster(
   pageRaster: RasterPage,
@@ -293,16 +332,16 @@ export async function compositeWatermarkOnRaster(
 
   const wmImg = await loadImage(watermark.buffer);
 
-  // Native 1:1 size by default (both rasterized at the same DPI already).
-  // Only scale down if the watermark would otherwise overflow the page.
-  const overflowScale = Math.min(
+  // Fit (contain) the watermark to the page: scale up or down so it fills
+  // as much of the page as possible without being clipped, preserving its
+  // aspect ratio.
+  const fitScale = Math.min(
     pageRaster.widthPx / watermark.widthPx,
-    pageRaster.heightPx / watermark.heightPx,
-    1 // never scale UP — only ever shrink to fit, never enlarge
+    pageRaster.heightPx / watermark.heightPx
   );
 
-  const drawW = watermark.widthPx * overflowScale;
-  const drawH = watermark.heightPx * overflowScale;
+  const drawW = watermark.widthPx * fitScale;
+  const drawH = watermark.heightPx * fitScale;
   const dx = (pageRaster.widthPx - drawW) / 2;
   const dy = (pageRaster.heightPx - drawH) / 2;
 
@@ -326,32 +365,49 @@ export async function watermarkPdf(
     dpi?: number;
     opacity?: number;
     onProgress?: (pageIndex: number, totalPages: number) => void;
+    /** Max pages rasterized concurrently. Higher = faster but more memory. */
+    concurrency?: number;
   } = {}
 ): Promise<Uint8Array> {
   const dpi = opts.dpi ?? 300;
+  const concurrency = opts.concurrency ?? 3;
 
   const totalPages = await getPdfPageCount(sourcePdfBytes);
-  const outDoc = await PDFDocument.create();
 
-  for (let i = 0; i < totalPages; i++) {
+  // Render + composite each page independently (no shared state between
+  // pages), processed in small concurrent batches rather than strictly
+  // one-at-a-time — this meaningfully cuts wall-clock time for
+  // multi-page documents while keeping peak memory bounded.
+  const processPage = async (i: number): Promise<{ buffer: Buffer; widthPt: number; heightPt: number }> => {
     const raster = await renderPdfPageToRaster(sourcePdfBytes, i, dpi);
-
     const finalPngBuffer = watermark
       ? await compositeWatermarkOnRaster(raster, watermark, {
           opacity: opts.opacity,
         })
       : raster.buffer;
-
-    const pngImage = await outDoc.embedPng(finalPngBuffer);
-    const page = outDoc.addPage([raster.widthPt, raster.heightPt]);
-    page.drawImage(pngImage, {
-      x: 0,
-      y: 0,
-      width: raster.widthPt,
-      height: raster.heightPt,
-    });
-
     opts.onProgress?.(i + 1, totalPages);
+    return { buffer: finalPngBuffer, widthPt: raster.widthPt, heightPt: raster.heightPt };
+  };
+
+  const results: { buffer: Buffer; widthPt: number; heightPt: number }[] = new Array(totalPages);
+  for (let batchStart = 0; batchStart < totalPages; batchStart += concurrency) {
+    const batchEnd = Math.min(batchStart + concurrency, totalPages);
+    const batchResults = await Promise.all(
+      Array.from({ length: batchEnd - batchStart }, (_, k) => processPage(batchStart + k))
+    );
+    for (let k = 0; k < batchResults.length; k++) {
+      results[batchStart + k] = batchResults[k];
+    }
+  }
+
+  // Assembling into the final PDFDocument must happen sequentially (pdf-lib
+  // documents aren't safe for concurrent mutation), but this part is cheap
+  // compared to rasterization.
+  const outDoc = await PDFDocument.create();
+  for (const { buffer, widthPt, heightPt } of results) {
+    const pngImage = await outDoc.embedPng(buffer);
+    const page = outDoc.addPage([widthPt, heightPt]);
+    page.drawImage(pngImage, { x: 0, y: 0, width: widthPt, height: heightPt });
   }
 
   return outDoc.save();

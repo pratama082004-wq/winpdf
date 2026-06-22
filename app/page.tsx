@@ -2,10 +2,9 @@
 
 import { useCallback, useRef, useState } from "react";
 import JSZip from "jszip";
-import PdfDropzone from "@/components/PdfDropzone";
-import WatermarkPicker from "@/components/WatermarkPicker";
-import FileQueueItem from "@/components/FileQueueItem";
-import DownloadAllButton from "@/components/DownloadAllButton";
+import PdfTargetDropzone from "@/components/PdfTargetDropzone";
+import WatermarkDropzone from "@/components/WatermarkDropzone";
+import DownloadModePicker, { type DownloadMode } from "@/components/DownloadModePicker";
 import type { WatermarkJob } from "@/lib/client-utils";
 
 let idCounter = 0;
@@ -17,6 +16,7 @@ function nextId() {
 export default function Home() {
   const [jobs, setJobs] = useState<WatermarkJob[]>([]);
   const [watermarkFile, setWatermarkFile] = useState<File | null>(null);
+  const [downloadMode, setDownloadMode] = useState<DownloadMode>("separate");
   const [isRunning, setIsRunning] = useState(false);
   const runningRef = useRef(false);
 
@@ -31,39 +31,24 @@ export default function Home() {
     setJobs((prev) => prev.filter((j) => j.id !== id));
   }
 
-  function downloadJob(job: WatermarkJob) {
-    if (!job.resultBlob) return;
-    const url = URL.createObjectURL(job.resultBlob);
+  function triggerDownload(blob: Blob, name: string) {
+    const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = job.resultName ?? `${job.file.name.replace(/\.pdf$/i, "")}-watermarked.pdf`;
+    a.download = name;
     document.body.appendChild(a);
     a.click();
     a.remove();
     URL.revokeObjectURL(url);
   }
 
-  async function downloadAllSeparate() {
-    const doneJobs = jobs.filter((j) => j.status === "done" && j.resultBlob);
-    for (const job of doneJobs) {
-      downloadJob(job);
-      // small delay so the browser doesn't block multiple simultaneous downloads
-      await new Promise((r) => setTimeout(r, 250));
-    }
-  }
-
-  async function downloadAllAsZip() {
-    const doneJobs = jobs.filter((j) => j.status === "done" && j.resultBlob);
-    if (doneJobs.length === 0) return;
-
+  async function downloadAsZip(doneJobs: WatermarkJob[]) {
     const zip = new JSZip();
     const usedNames = new Set<string>();
 
     for (const job of doneJobs) {
-      let name =
-        job.resultName ?? `${job.file.name.replace(/\.pdf$/i, "")}-watermarked.pdf`;
-
-      // Avoid collisions if two files happen to produce the same output name.
+      if (!job.resultBlob) continue;
+      let name = job.resultName ?? `${job.file.name.replace(/\.pdf$/i, "")}-watermarked.pdf`;
       if (usedNames.has(name)) {
         const base = name.replace(/\.pdf$/i, "");
         let suffix = 2;
@@ -71,47 +56,44 @@ export default function Home() {
         name = `${base} (${suffix}).pdf`;
       }
       usedNames.add(name);
-
-      zip.file(name, job.resultBlob as Blob);
+      zip.file(name, job.resultBlob);
     }
 
     const zipBlob = await zip.generateAsync({ type: "blob" });
-    const url = URL.createObjectURL(zipBlob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "materai-hasil-watermark.zip";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
+    triggerDownload(zipBlob, "lock-watermark-hasil.zip");
   }
 
-  async function processQueue() {
-    if (runningRef.current) return;
+  async function downloadSeparately(doneJobs: WatermarkJob[]) {
+    for (const job of doneJobs) {
+      if (!job.resultBlob) continue;
+      const name = job.resultName ?? `${job.file.name.replace(/\.pdf$/i, "")}-watermarked.pdf`;
+      triggerDownload(job.resultBlob, name);
+      // small delay so the browser doesn't block multiple simultaneous downloads
+      await new Promise((r) => setTimeout(r, 250));
+    }
+  }
+
+  async function processAndDownload() {
+    if (runningRef.current || jobs.length === 0) return;
     runningRef.current = true;
     setIsRunning(true);
 
-    // Snapshot current queued jobs at start; process strictly sequentially
-    // so the server isn't hit with many heavy rasterization requests at once.
-    const queuedIds = jobs.filter((j) => j.status === "queued").map((j) => j.id);
+    const targetIds = jobs.filter((j) => j.status === "queued" || j.status === "error").map((j) => j.id);
 
-    for (const id of queuedIds) {
+    const finishedJobs: WatermarkJob[] = [];
+
+    for (const id of targetIds) {
       const job = jobs.find((j) => j.id === id);
       if (!job) continue;
 
-      setJobs((prev) =>
-        prev.map((j) => (j.id === id ? { ...j, status: "processing" } : j))
-      );
+      setJobs((prev) => prev.map((j) => (j.id === id ? { ...j, status: "processing" } : j)));
 
       try {
         const formData = new FormData();
         formData.append("file", job.file);
         if (watermarkFile) formData.append("watermark", watermarkFile);
 
-        const res = await fetch("/api/watermark", {
-          method: "POST",
-          body: formData,
-        });
+        const res = await fetch("/api/watermark", { method: "POST", body: formData });
 
         if (!res.ok) {
           let message = "Terjadi kesalahan pada server.";
@@ -129,11 +111,9 @@ export default function Home() {
         const match = disposition.match(/filename="(.+)"/);
         const resultName = match?.[1] ?? `${job.file.name.replace(/\.pdf$/i, "")}-watermarked.pdf`;
 
-        setJobs((prev) =>
-          prev.map((j) =>
-            j.id === id ? { ...j, status: "done", resultBlob: blob, resultName } : j
-          )
-        );
+        const updatedJob: WatermarkJob = { ...job, status: "done", resultBlob: blob, resultName };
+        finishedJobs.push(updatedJob);
+        setJobs((prev) => prev.map((j) => (j.id === id ? updatedJob : j)));
       } catch (err) {
         const message = err instanceof Error ? err.message : "Gagal memproses berkas.";
         setJobs((prev) =>
@@ -142,191 +122,98 @@ export default function Home() {
       }
     }
 
+    // Also include any jobs that were already done from a previous run.
+    const alreadyDone = jobs.filter((j) => j.status === "done" && j.resultBlob);
+    const allDone = [...alreadyDone, ...finishedJobs];
+
+    if (allDone.length > 0) {
+      if (downloadMode === "zip") {
+        await downloadAsZip(allDone);
+      } else {
+        await downloadSeparately(allDone);
+      }
+    }
+
     runningRef.current = false;
     setIsRunning(false);
   }
 
-  const queuedCount = jobs.filter((j) => j.status === "queued").length;
-  const doneCount = jobs.filter((j) => j.status === "done").length;
   const hasJobs = jobs.length > 0;
+  const allJobsHandled = jobs.length > 0 && jobs.every((j) => j.status === "done");
+  const canSubmit = hasJobs && !isRunning;
 
   return (
-    <div className="flex flex-col flex-1" style={{ background: "var(--paper)" }}>
-      <header
+    <div className="flex flex-col flex-1 items-center" style={{ background: "var(--page-bg)", padding: "2.5rem 1.25rem" }}>
+      <div
         style={{
-          borderBottom: "1px solid var(--line)",
-          padding: "1.1rem 1.5rem",
+          width: "100%",
+          maxWidth: "640px",
+          background: "var(--card-bg)",
+          borderRadius: "20px",
+          padding: "2rem",
+          boxShadow: "0 1px 3px rgba(20, 30, 50, 0.06), 0 12px 32px rgba(20, 30, 50, 0.05)",
         }}
       >
-        <div className="max-w-3xl mx-auto flex items-center gap-3">
-          <div
-            aria-hidden="true"
-            style={{
-              width: 34,
-              height: 34,
-              borderRadius: "50%",
-              border: "1.5px solid var(--stamp)",
-              color: "var(--stamp)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              fontFamily: "var(--font-display)",
-              fontWeight: 700,
-              fontSize: "0.95rem",
-              flexShrink: 0,
-            }}
-          >
-            M
-          </div>
-          <div>
-            <p
-              style={{
-                fontFamily: "var(--font-display)",
-                fontWeight: 600,
-                fontSize: "1.05rem",
-                color: "var(--ink)",
-                lineHeight: 1.1,
-              }}
-            >
-              Materai
-            </p>
-            <p style={{ fontSize: "0.7rem", color: "var(--ink-faint)", letterSpacing: "0.02em" }}>
-              watermark pdf permanen
-            </p>
-          </div>
-        </div>
-      </header>
-
-      <main className="flex-1 w-full max-w-3xl mx-auto px-6 py-10">
-        <div style={{ marginBottom: "2.25rem" }}>
-          <h1
-            style={{
-              fontFamily: "var(--font-display)",
-              fontWeight: 600,
-              fontSize: "1.65rem",
-              color: "var(--ink)",
-              marginBottom: "0.5rem",
-              lineHeight: 1.25,
-            }}
-          >
-            Bubuhkan watermark yang tidak bisa lepas dari dokumen
-          </h1>
-          <p style={{ fontSize: "0.95rem", color: "var(--ink-soft)", maxWidth: "38rem" }}>
-            Setiap halaman dirender ulang pada 300 DPI lalu disatukan dengan watermark
-            menjadi satu gambar utuh — sehingga saat dikonversi ke Word sekalipun,
-            watermark tetap menempel pada dokumen.
-          </p>
-        </div>
-
-        <div style={{ marginBottom: "1.75rem" }}>
-          <PdfDropzone onFilesAdded={addFiles} />
-        </div>
+        <h1 style={{ fontSize: "1.6rem", fontWeight: 700, color: "var(--ink)", marginBottom: "0.4rem" }}>
+          Lock Watermark
+        </h1>
+        <p style={{ fontSize: "0.95rem", color: "var(--ink-faint)", marginBottom: "1.75rem" }}>
+          Watermark + rasterize PDF. 100% Anti-Convert.
+        </p>
 
         <section style={{ marginBottom: "1.75rem" }}>
-          <p
-            style={{
-              fontFamily: "var(--font-tech)",
-              fontSize: "0.72rem",
-              color: "var(--ink-faint)",
-              letterSpacing: "0.04em",
-              textTransform: "uppercase",
-              marginBottom: "0.6rem",
-            }}
-          >
-            Berkas watermark (opsional)
+          <p style={{ fontSize: "0.95rem", fontWeight: 500, color: "var(--ink)", marginBottom: "0.7rem" }}>
+            1. PDF Gambar Teknik
           </p>
-          <WatermarkPicker watermarkFile={watermarkFile} onChange={setWatermarkFile} />
-          <p style={{ fontSize: "0.8rem", color: "var(--ink-faint)", marginTop: "0.5rem" }}>
-            Tanpa berkas watermark, dokumen akan diproses ulang (dirasterisasi) saja —
-            cocok untuk dokumen yang sudah ada watermark dan hanya perlu dikunci.
-          </p>
+          <PdfTargetDropzone
+            jobs={jobs}
+            onFilesAdded={addFiles}
+            onRemove={removeJob}
+            disabled={isRunning}
+          />
         </section>
 
-        {hasJobs && (
-          <section>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                marginBottom: "0.75rem",
-              }}
-            >
-              <p
-                style={{
-                  fontFamily: "var(--font-tech)",
-                  fontSize: "0.72rem",
-                  color: "var(--ink-faint)",
-                  letterSpacing: "0.04em",
-                  textTransform: "uppercase",
-                }}
-              >
-                Antrian — {jobs.length} berkas
-              </p>
+        <section style={{ marginBottom: "1.75rem" }}>
+          <p style={{ fontSize: "0.95rem", fontWeight: 500, color: "var(--ink)", marginBottom: "0.7rem" }}>
+            2. PDF Watermark
+          </p>
+          <WatermarkDropzone watermarkFile={watermarkFile} onChange={setWatermarkFile} disabled={isRunning} />
+        </section>
 
-              <div style={{ display: "flex", gap: "0.6rem" }}>
-                {doneCount > 1 && (
-                  <DownloadAllButton
-                    onDownloadZip={downloadAllAsZip}
-                    onDownloadSeparate={downloadAllSeparate}
-                  />
-                )}
-                {queuedCount > 0 && (
-                  <button
-                    onClick={processQueue}
-                    disabled={isRunning}
-                    style={{
-                      fontFamily: "var(--font-body)",
-                      fontSize: "0.8rem",
-                      fontWeight: 600,
-                      color: "var(--paper-raised)",
-                      background: isRunning ? "var(--ink-faint)" : "var(--stamp)",
-                      border: "none",
-                      borderRadius: "2px",
-                      padding: "0.45rem 0.9rem",
-                      cursor: isRunning ? "default" : "pointer",
-                    }}
-                  >
-                    {isRunning
-                      ? "Memproses\u2026"
-                      : `Proses ${queuedCount} berkas`}
-                  </button>
-                )}
-              </div>
-            </div>
+        <section style={{ marginBottom: "1.75rem" }}>
+          <p style={{ fontSize: "0.95rem", fontWeight: 500, color: "var(--ink)", marginBottom: "0.7rem" }}>
+            3. Opsi Unduhan
+          </p>
+          <DownloadModePicker value={downloadMode} onChange={setDownloadMode} disabled={isRunning} />
+        </section>
 
-            <div style={{ display: "flex", flexDirection: "column", gap: "0.6rem" }}>
-              {jobs.map((job) => (
-                <FileQueueItem
-                  key={job.id}
-                  job={job}
-                  onRemove={removeJob}
-                  onDownload={downloadJob}
-                />
-              ))}
-            </div>
-          </section>
-        )}
-      </main>
-
-      <footer
-        style={{
-          borderTop: "1px solid var(--line)",
-          padding: "1.1rem 1.5rem",
-        }}
-      >
-        <p
+        <button
+          onClick={processAndDownload}
+          disabled={!canSubmit}
           style={{
-            maxWidth: "48rem",
-            margin: "0 auto",
-            fontSize: "0.75rem",
-            color: "var(--ink-faint)",
-            textAlign: "center",
+            width: "100%",
+            padding: "0.85rem",
+            borderRadius: "12px",
+            border: "none",
+            fontSize: "1rem",
+            fontWeight: 700,
+            color: "#ffffff",
+            background: canSubmit ? "var(--accent)" : "var(--disabled-bg)",
+            cursor: canSubmit ? "pointer" : "default",
+            transition: "background 120ms ease",
           }}
         >
-          Proses dilakukan di server pada saat permintaan; berkas tidak disimpan permanen.
-        </p>
-      </footer>
+          {isRunning
+            ? "Memproses…"
+            : allJobsHandled
+              ? "Unduh Lagi"
+              : "Kunci & Download"}
+        </button>
+      </div>
+
+      <p style={{ marginTop: "1.5rem", fontSize: "0.78rem", color: "var(--ink-faint)", textAlign: "center" }}>
+        Proses dilakukan di server saat permintaan; berkas tidak disimpan permanen.
+      </p>
     </div>
   );
 }

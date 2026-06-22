@@ -1,19 +1,27 @@
 @import "tailwindcss";
 
 :root {
-  --paper: #faf9f5;
-  --paper-raised: #ffffff;
-  --ink: #1a1a17;
-  --ink-soft: #5a5750;
-  --ink-faint: #8c8980;
-  --line: #ddd9cd;
-  --line-strong: #1a1a17;
-  --stamp: #b23b2e;
-  --stamp-soft: #f1e3df;
-  --ok: #2f6b4f;
-  --ok-soft: #e3ede7;
+  --page-bg: #f1f3f6;
+  --card-bg: #ffffff;
+  --ink: #1c2333;
+  --ink-soft: #5b6478;
+  --ink-faint: #97a0b3;
+  --line: #e4e7ed;
 
-  --background: var(--paper);
+  --pdf-zone-bg: #eaf1fd;
+  --pdf-zone-border: #b9d2f8;
+  --pdf-zone-text: #2554c7;
+  --pdf-zone-subtext: #6f93da;
+
+  --wm-zone-bg: #f5eefc;
+  --wm-zone-border: #ddc2f3;
+  --wm-zone-text: #7c2bc4;
+  --wm-zone-subtext: #b18ad6;
+
+  --accent: #2554c7;
+  --disabled-bg: #c7ccd6;
+
+  --background: var(--page-bg);
   --foreground: var(--ink);
 }
 
@@ -21,13 +29,12 @@
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --font-sans: var(--font-body);
-  --font-mono: var(--font-tech);
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: var(--font-body), Arial, Helvetica, sans-serif;
+  font-family: var(--font-body), -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
 }
 
 * {
@@ -36,11 +43,13 @@ body {
 
 @keyframes pulse {
   0%, 100% { opacity: 1; }
-  50% { opacity: 0.3; }
+  50% { opacity: 0.35; }
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
 
 input[type="file"].hidden {
   display: none;
 }
-
-
