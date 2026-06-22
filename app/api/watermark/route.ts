@@ -29,7 +29,6 @@ export async function POST(req: NextRequest) {
 
     const resultBytes = await watermarkPdf(sourceBytes, watermarkAsset, {
       dpi: 300,
-      marginRatio: 0.08,
     });
 
     const outName = file.name.replace(/\.pdf$/i, "") + "-watermarked.pdf";

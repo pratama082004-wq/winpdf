@@ -212,6 +212,13 @@ export async function getPdfPageCount(pdfBytes: Uint8Array): Promise<number> {
  * cropping, the surrounding empty margins would get scaled along with it,
  * shrinking the visible logo and throwing off its centering once placed
  * onto a document page.
+ *
+ * PNG/JPG watermarks are treated the same way for consistency: since a
+ * raw image has no inherent physical size, its pixels are assumed to be
+ * authored at 72 DPI (the common default in design tools like Photoshop
+ * or Figma) and then scaled up to the target DPI — matching how a PDF
+ * watermark's point-based page size gets converted to pixels. This keeps
+ * both watermark types stamped at a comparable physical scale.
  */
 export async function loadWatermarkAsset(
   fileBytes: Uint8Array,
@@ -228,27 +235,54 @@ export async function loadWatermarkAsset(
       heightPx: cropped.heightPx,
     };
   }
+
   const buffer = Buffer.from(fileBytes);
   const cropped = await autoCropToContent(buffer);
+
+  // Treat the cropped image's pixels as if authored at 72 DPI, then scale
+  // to the target DPI so it occupies the same physical size a PDF
+  // watermark of equivalent point-dimensions would.
+  const dpiScale = dpi / PDF_BASE_DPI;
+  if (dpiScale === 1) {
+    return { buffer: cropped.buffer, widthPx: cropped.widthPx, heightPx: cropped.heightPx };
+  }
+
+  const scaledW = Math.round(cropped.widthPx * dpiScale);
+  const scaledH = Math.round(cropped.heightPx * dpiScale);
+  const img = await loadImage(cropped.buffer);
+  const scaledCanvas = createCanvas(scaledW, scaledH);
+  const scaledCtx = scaledCanvas.getContext("2d");
+  scaledCtx.drawImage(img, 0, 0, scaledW, scaledH);
+
   return {
-    buffer: cropped.buffer,
-    widthPx: cropped.widthPx,
-    heightPx: cropped.heightPx,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    buffer: (scaledCanvas as any).toBuffer("image/png"),
+    widthPx: scaledW,
+    heightPx: scaledH,
   };
 }
 
 /**
- * Composites a watermark onto a rasterized page. The watermark is always
- * scaled to "fit" (contain) within the page bounds, preserving its own
- * aspect ratio (a landscape watermark stays landscape, just scaled down to
- * fit a portrait page), and centered with a margin.
+ * Composites a watermark onto a rasterized page.
+ *
+ * Since both the page and the watermark are rasterized at the same DPI,
+ * 1 watermark pixel already represents the same physical size as 1 page
+ * pixel. So the watermark is stamped at its native size (no scaling),
+ * centered on the page — exactly how a tool like pdftk stamps a
+ * same-sized watermark PDF onto a document: the watermark's own design
+ * (e.g. sized for an A4 sheet) is trusted as-is, rather than being
+ * stretched or shrunk to "fit" an arbitrary content box.
+ *
+ * The only exception is when the page is physically *smaller* than the
+ * watermark (e.g. a watermark designed for A4 stamped onto an A5 page) —
+ * in that case the watermark is scaled down just enough to fit within
+ * the page, so nothing gets clipped.
  */
 export async function compositeWatermarkOnRaster(
   pageRaster: RasterPage,
   watermark: WatermarkAsset,
-  opts: { marginRatio?: number; opacity?: number } = {}
+  opts: { opacity?: number } = {}
 ): Promise<Buffer> {
-  const marginRatio = opts.marginRatio ?? 0.08;
   const opacity = opts.opacity ?? 1;
 
   const canvas = createCanvas(pageRaster.widthPx, pageRaster.heightPx);
@@ -259,11 +293,16 @@ export async function compositeWatermarkOnRaster(
 
   const wmImg = await loadImage(watermark.buffer);
 
-  const maxW = pageRaster.widthPx * (1 - marginRatio * 2);
-  const maxH = pageRaster.heightPx * (1 - marginRatio * 2);
-  const scale = Math.min(maxW / watermark.widthPx, maxH / watermark.heightPx);
-  const drawW = watermark.widthPx * scale;
-  const drawH = watermark.heightPx * scale;
+  // Native 1:1 size by default (both rasterized at the same DPI already).
+  // Only scale down if the watermark would otherwise overflow the page.
+  const overflowScale = Math.min(
+    pageRaster.widthPx / watermark.widthPx,
+    pageRaster.heightPx / watermark.heightPx,
+    1 // never scale UP — only ever shrink to fit, never enlarge
+  );
+
+  const drawW = watermark.widthPx * overflowScale;
+  const drawH = watermark.heightPx * overflowScale;
   const dx = (pageRaster.widthPx - drawW) / 2;
   const dy = (pageRaster.heightPx - drawH) / 2;
 
@@ -285,7 +324,6 @@ export async function watermarkPdf(
   watermark: WatermarkAsset | null,
   opts: {
     dpi?: number;
-    marginRatio?: number;
     opacity?: number;
     onProgress?: (pageIndex: number, totalPages: number) => void;
   } = {}
@@ -300,7 +338,6 @@ export async function watermarkPdf(
 
     const finalPngBuffer = watermark
       ? await compositeWatermarkOnRaster(raster, watermark, {
-          marginRatio: opts.marginRatio,
           opacity: opts.opacity,
         })
       : raster.buffer;

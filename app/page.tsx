@@ -1,9 +1,11 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
+import JSZip from "jszip";
 import PdfDropzone from "@/components/PdfDropzone";
 import WatermarkPicker from "@/components/WatermarkPicker";
 import FileQueueItem from "@/components/FileQueueItem";
+import DownloadAllButton from "@/components/DownloadAllButton";
 import type { WatermarkJob } from "@/lib/client-utils";
 
 let idCounter = 0;
@@ -41,13 +43,47 @@ export default function Home() {
     URL.revokeObjectURL(url);
   }
 
-  async function downloadAll() {
+  async function downloadAllSeparate() {
     const doneJobs = jobs.filter((j) => j.status === "done" && j.resultBlob);
     for (const job of doneJobs) {
       downloadJob(job);
       // small delay so the browser doesn't block multiple simultaneous downloads
       await new Promise((r) => setTimeout(r, 250));
     }
+  }
+
+  async function downloadAllAsZip() {
+    const doneJobs = jobs.filter((j) => j.status === "done" && j.resultBlob);
+    if (doneJobs.length === 0) return;
+
+    const zip = new JSZip();
+    const usedNames = new Set<string>();
+
+    for (const job of doneJobs) {
+      let name =
+        job.resultName ?? `${job.file.name.replace(/\.pdf$/i, "")}-watermarked.pdf`;
+
+      // Avoid collisions if two files happen to produce the same output name.
+      if (usedNames.has(name)) {
+        const base = name.replace(/\.pdf$/i, "");
+        let suffix = 2;
+        while (usedNames.has(`${base} (${suffix}).pdf`)) suffix += 1;
+        name = `${base} (${suffix}).pdf`;
+      }
+      usedNames.add(name);
+
+      zip.file(name, job.resultBlob as Blob);
+    }
+
+    const zipBlob = await zip.generateAsync({ type: "blob" });
+    const url = URL.createObjectURL(zipBlob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "materai-hasil-watermark.zip";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
   }
 
   async function processQueue() {
@@ -230,22 +266,10 @@ export default function Home() {
 
               <div style={{ display: "flex", gap: "0.6rem" }}>
                 {doneCount > 1 && (
-                  <button
-                    onClick={downloadAll}
-                    style={{
-                      fontFamily: "var(--font-body)",
-                      fontSize: "0.8rem",
-                      fontWeight: 600,
-                      color: "var(--ink)",
-                      background: "transparent",
-                      border: "1px solid var(--line)",
-                      borderRadius: "2px",
-                      padding: "0.45rem 0.75rem",
-                      cursor: "pointer",
-                    }}
-                  >
-                    Unduh semua
-                  </button>
+                  <DownloadAllButton
+                    onDownloadZip={downloadAllAsZip}
+                    onDownloadSeparate={downloadAllSeparate}
+                  />
                 )}
                 {queuedCount > 0 && (
                   <button
