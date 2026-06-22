@@ -78,63 +78,6 @@ async function renderPdfPageTransparent(
   }
 }
 
-/**
- * Crops a PNG buffer down to the bounding box of its non-transparent
- * content, removing empty margins. If the image has no transparency at
- * all (e.g. a flat opaque image), it's returned unchanged.
- */
-async function autoCropToContent(buffer: Buffer): Promise<{
-  buffer: Buffer;
-  widthPx: number;
-  heightPx: number;
-}> {
-  const img = await loadImage(buffer);
-  const probe = createCanvas(img.width, img.height);
-  const probeCtx = probe.getContext("2d");
-  probeCtx.drawImage(img, 0, 0);
-  const { data } = probeCtx.getImageData(0, 0, img.width, img.height);
-
-  let minX = img.width;
-  let minY = img.height;
-  let maxX = -1;
-  let maxY = -1;
-
-  for (let y = 0; y < img.height; y++) {
-    for (let x = 0; x < img.width; x++) {
-      const alpha = data[(y * img.width + x) * 4 + 3];
-      if (alpha > 4) {
-        // small threshold to ignore near-invisible anti-aliasing fuzz
-        if (x < minX) minX = x;
-        if (x > maxX) maxX = x;
-        if (y < minY) minY = y;
-        if (y > maxY) maxY = y;
-      }
-    }
-  }
-
-  // No transparent pixels found at all (fully opaque image) — nothing to crop.
-  if (maxX < 0 || maxY < 0) {
-    return { buffer, widthPx: img.width, heightPx: img.height };
-  }
-
-  const cropW = maxX - minX + 1;
-  const cropH = maxY - minY + 1;
-  // If the detected content is the entire canvas, skip cropping.
-  if (minX === 0 && minY === 0 && cropW === img.width && cropH === img.height) {
-    return { buffer, widthPx: img.width, heightPx: img.height };
-  }
-
-  const cropped = createCanvas(cropW, cropH);
-  const croppedCtx = cropped.getContext("2d");
-  croppedCtx.drawImage(img, -minX, -minY);
-
-  return {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    buffer: (cropped as any).toBuffer("image/png"),
-    widthPx: cropW,
-    heightPx: cropH,
-  };
-}
 
 /**
  * Renders a single page of a PDF (given as bytes) to a high-resolution
@@ -206,12 +149,14 @@ export async function getPdfPageCount(pdfBytes: Uint8Array): Promise<number> {
  * Loads a watermark asset, which can be a PNG/JPG image, or a single-page
  * PDF (rasterized at the same target DPI for consistent sharpness).
  *
- * For PDF watermarks, the page is rendered with a transparent background
- * and then auto-cropped to its actual content — many watermark PDFs are
- * exported on a full page with the logo placed off-center, and without
- * cropping, the surrounding empty margins would get scaled along with it,
- * shrinking the visible logo and throwing off its centering once placed
- * onto a document page.
+ * The watermark canvas is kept whole (no cropping) — exactly like pdftk,
+ * which stamps a watermark PDF onto a document as-is. Many watermark PDFs
+ * are deliberately authored with asymmetric content (e.g. a logo plus a
+ * small corner stamp) positioned within a full page using specific
+ * margins; those margins are what makes the logo land in a visually
+ * centered spot once the watermark is scaled to fit a document page.
+ * Cropping away the empty margins would discard that intentional
+ * positioning and shift the logo away from where pdftk would place it.
  *
  * PNG/JPG watermarks are treated the same way for consistency: since a
  * raw image has no inherent physical size, its pixels are assumed to be
@@ -237,31 +182,29 @@ export async function loadWatermarkAsset(
   const lower = fileName.toLowerCase();
   if (lower.endsWith(".pdf")) {
     const raster = await renderPdfPageTransparent(fileBytes, dpi);
-    const cropped = await autoCropToContent(raster.buffer);
     const finalBuffer =
-      clarityGamma !== 1 ? await boostWatermarkAlpha(cropped.buffer, clarityGamma) : cropped.buffer;
+      clarityGamma !== 1 ? await boostWatermarkAlpha(raster.buffer, clarityGamma) : raster.buffer;
     return {
       buffer: finalBuffer,
-      widthPx: cropped.widthPx,
-      heightPx: cropped.heightPx,
+      widthPx: raster.widthPx,
+      heightPx: raster.heightPx,
     };
   }
 
   const buffer = Buffer.from(fileBytes);
-  const cropped = await autoCropToContent(buffer);
+  const img = await loadImage(buffer);
 
-  // Treat the cropped image's pixels as if authored at 72 DPI, then scale
-  // to the target DPI so it occupies the same physical size a PDF
-  // watermark of equivalent point-dimensions would.
+  // Treat the image's pixels as if authored at 72 DPI, then scale to the
+  // target DPI so it occupies the same physical size a PDF watermark of
+  // equivalent point-dimensions would.
   const dpiScale = dpi / PDF_BASE_DPI;
-  let scaledBuffer = cropped.buffer;
-  let scaledW = cropped.widthPx;
-  let scaledH = cropped.heightPx;
+  let scaledBuffer = buffer;
+  let scaledW = img.width;
+  let scaledH = img.height;
 
   if (dpiScale !== 1) {
-    scaledW = Math.round(cropped.widthPx * dpiScale);
-    scaledH = Math.round(cropped.heightPx * dpiScale);
-    const img = await loadImage(cropped.buffer);
+    scaledW = Math.round(img.width * dpiScale);
+    scaledH = Math.round(img.height * dpiScale);
     const scaledCanvas = createCanvas(scaledW, scaledH);
     const scaledCtx = scaledCanvas.getContext("2d");
     scaledCtx.drawImage(img, 0, 0, scaledW, scaledH);
