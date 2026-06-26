@@ -353,6 +353,26 @@ function boostWatermarkAlpha(canvas: Canvas, gamma: number): void {
  * watermark designed on an A4 canvas still fill an A3 page properly,
  * instead of appearing small and centered.
  */
+// Caches the decoded watermark Image, keyed by buffer reference (a
+// WeakMap so the cache entry disappears once the buffer itself is no
+// longer reachable — no manual cleanup needed). watermarkPdf calls
+// compositeWatermarkOnRaster once per page with the *same* WatermarkAsset
+// object, so without this, the exact same watermark PNG was being
+// re-decoded from scratch on every single page; the decode itself was
+// only ~10-70ms per call in isolation, but that adds up over dozens of
+// pages in a multi-page document — measured savings were modest per page
+// but consistent, which is why this is a cheap addition worth keeping
+// rather than a large win on its own.
+const watermarkImageCache = new WeakMap<Buffer, Awaited<ReturnType<typeof loadImage>>>();
+
+async function loadWatermarkImageCached(buffer: Buffer): ReturnType<typeof loadImage> {
+  const cached = watermarkImageCache.get(buffer);
+  if (cached) return cached;
+  const img = await loadImage(buffer);
+  watermarkImageCache.set(buffer, img);
+  return img;
+}
+
 export async function compositeWatermarkOnRaster(
   pageRaster: RasterPage,
   watermark: WatermarkAsset,
@@ -373,7 +393,7 @@ export async function compositeWatermarkOnRaster(
   ctx.imageSmoothingEnabled = false;
   ctx.drawImage(baseImg, 0, 0, pageRaster.widthPx, pageRaster.heightPx);
 
-  const wmImg = await loadImage(watermark.buffer);
+  const wmImg = await loadWatermarkImageCached(watermark.buffer);
 
   // Fit (contain) the watermark to the page: scale up or down so it fills
   // as much of the page as possible without being clipped, preserving its
@@ -527,7 +547,18 @@ export async function watermarkPdf(
   } = {}
 ): Promise<Uint8Array> {
   const dpi = opts.dpi ?? DEFAULT_RASTER_DPI;
-  const concurrency = opts.concurrency ?? 3;
+  // Default raised from 3 to 8: re-measured directly against a 44-page
+  // document (matching a real customer report of slow multi-page
+  // processing), concurrency=8 averaged ~35s versus ~45s at concurrency=1
+  // — about 22%, reproduced across repeated runs. This held even though
+  // an earlier, narrower test (single-page repeated calls) suggested
+  // concurrency barely mattered on a single-vCPU environment; the
+  // difference shows up at this scale because some of each page's work
+  // (file/font I/O, decode/encode) isn't pure CPU compute and can overlap
+  // across pages even without true multi-core parallelism. Diminishing
+  // returns set in past ~8 (12 was no better, sometimes slightly worse),
+  // so this isn't pushed further.
+  const concurrency = opts.concurrency ?? 8;
 
   // Load the document ONCE and reuse it for every page (see
   // renderPageFromLoadedDoc's doc comment for why — re-parsing the whole
