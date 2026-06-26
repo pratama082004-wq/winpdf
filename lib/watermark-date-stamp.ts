@@ -31,11 +31,12 @@ const TEMPLATE_PAGE_HEIGHT_PT = 595;
 // Measured top-based y of the "K&DM WINTEQ" text baseline: 488.96
 // (top-based, from page top) -> convert to bottom-based: pageHeight - y
 // Verified against a real customer drawing (PIN, 612027-01-02-06-08-R1):
-// at +12pt, the gap from "WINTEQ" to the date was visible but still read
-// as crowded/close in practice. Pushed further out to +22pt for a clearly
-// comfortable gap; the date (~70pt wide at 14pt) still ends well short
-// (~24pt of clearance) of the stamp box's right border (~290pt).
-const PURPLE_DATE_X = 174.43 + 22;
+// at +22pt (the previous value), the customer still asked for the gap to
+// be pushed further right. Now at +31pt: "WINTEQ" ends around x=180pt, so
+// this starts the date around x=205, giving a ~25pt gap — and at the new
+// 16pt font size (~80pt wide, see PURPLE_FONT_SIZE below) it still ends
+// with ~5pt of clearance before the stamp box's right border (~290pt).
+const PURPLE_DATE_X = 174.43 + 31;
 // Nudged up 3pt from the raw "K&DM WINTEQ" baseline (488.96): at 14pt,
 // Helvetica numerals extend visibly below their own baseline (descender
 // space numerals don't normally use, but font metrics still reserve it),
@@ -43,14 +44,12 @@ const PURPLE_DATE_X = 174.43 + 22;
 // border / the table row directly below it on real drawings. Verified
 // against an actual flagged PDF that this 3pt margin clears the border.
 const PURPLE_DATE_BASELINE_Y = TEMPLATE_PAGE_HEIGHT_PT - (488.96 - 3);
-// Calibrated against a real customer example: the date text reads as
-// roughly 1.5x the cap-height of the "K&DM WINTEQ" line next to it
-// (which has a measured bbox height of ~9pt), not a flat 36pt — 36pt
-// was based on a misreading of the customer's "font size 36" as PDF
-// points, but it's ~4x too large relative to the surrounding stamp text
-// and overflows badly once stamped on a real drawing (where dense
-// content sits right next to/below the stamp, unlike an empty test page).
-const PURPLE_FONT_SIZE = 14;
+// Bumped up from 14pt: customer asked for the date to read a bit bigger
+// alongside the wider gap above. 16pt is the largest that still clears
+// the stamp box's right border with the new +31pt offset (see
+// PURPLE_DATE_X) — going further would need either less gap or risk
+// clipping the box edge on drawings where the box is at its narrowest.
+const PURPLE_FONT_SIZE = 16;
 
 // Orange stamp: differs between Controlled and Uncontrolled because the
 // embedded raster image's placement rect (and thus its internal scale)

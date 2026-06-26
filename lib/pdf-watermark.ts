@@ -5,6 +5,20 @@ import path from "path";
 
 const PDF_BASE_DPI = 72; // PDF user-space unit is always 1/72 inch
 
+// Master switch for the line-darkening pass (see sharpenRasterLines below
+// for the full rationale). Turned OFF here per customer feedback: on a
+// real drawing (PIN, 612027-01-02-06-08-R1) the embedded barcode's bars
+// — only 2-3px wide/spaced at 300 DPI — were measurably fused together by
+// the 3x3 min-filter (run-length analysis showed dark runs ballooning to
+// 10-39px with the gaps between them shrinking to a constant 2-3px,
+// versus a healthy varied 2-7px pattern on a known-good reference
+// drawing), making it unscannable. CAD line crispness was traded off
+// against barcode integrity, and the customer asked to prioritize the
+// latter and match the look of a reference file with this pass off.
+// Flip back to `true` to re-enable if dimension-line crispness needs
+// revisiting later — every call site below reads this one flag.
+const ENABLE_LINE_SHARPENING = false;
+
 // Resolve pdfjs's bundled standard fonts / cmaps so text renders correctly
 // when the page uses the 14 standard PDF fonts (Helvetica, Times, etc.)
 // NOTE: we deliberately build this path from process.cwd() instead of
@@ -304,7 +318,9 @@ export async function compositeWatermarkOnRaster(
   ctx.drawImage(wmImg, dx, dy, drawW, drawH);
   ctx.globalAlpha = 1;
 
-  sharpenRasterLines(canvas);
+  if (ENABLE_LINE_SHARPENING) {
+    sharpenRasterLines(canvas);
+  }
 
   return canvas.toBuffer("image/png");
 }
@@ -432,7 +448,9 @@ export async function watermarkPdf(
       ? await compositeWatermarkOnRaster(raster, watermark, {
           opacity: opts.opacity,
         })
-      : await sharpenPngBuffer(raster.buffer);
+      : ENABLE_LINE_SHARPENING
+        ? await sharpenPngBuffer(raster.buffer)
+        : raster.buffer;
     opts.onProgress?.(i + 1, totalPages);
     return { buffer: finalPngBuffer, widthPt: raster.widthPt, heightPt: raster.heightPt };
   };
