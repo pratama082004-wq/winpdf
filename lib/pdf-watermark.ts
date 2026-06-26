@@ -5,6 +5,22 @@ import path from "path";
 
 const PDF_BASE_DPI = 72; // PDF user-space unit is always 1/72 inch
 
+// Single source of truth for the rasterization DPI, used by both the
+// source drawing and the watermark (they must match, or
+// compositeWatermarkOnRaster's fitScale math goes wrong). Previously
+// 300, hardcoded separately at each call site (the single-file route, the
+// batch route, and watermarkPdf's own default) — lowered to 200 here
+// after measuring that it cuts per-page processing time by ~36% (a real
+// customer complaint: a 44-page single file took 1m20s end-to-end) with
+// no measurable quality loss: a known test barcode's run-length pattern
+// at 200 DPI was bar-for-bar identical to 300 DPI (38 bars, healthy
+// varied 1-5px widths), while 150 DPI started fusing bars together (down
+// to 29 detected bars) — 200 was the lowest value that stayed identical
+// to the 300 DPI baseline on that test. Exported so both API routes stay
+// in sync with watermarkPdf's own default instead of each hardcoding a
+// number that could drift out of sync with this one.
+export const DEFAULT_RASTER_DPI = 200;
+
 // Master switch for the line-darkening pass (see sharpenRasterLines below
 // for the full rationale). Turned OFF here per customer feedback: on a
 // real drawing (PIN, 612027-01-02-06-08-R1) the embedded barcode's bars
@@ -510,7 +526,7 @@ export async function watermarkPdf(
     concurrency?: number;
   } = {}
 ): Promise<Uint8Array> {
-  const dpi = opts.dpi ?? 300;
+  const dpi = opts.dpi ?? DEFAULT_RASTER_DPI;
   const concurrency = opts.concurrency ?? 3;
 
   // Load the document ONCE and reuse it for every page (see

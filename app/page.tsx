@@ -84,6 +84,35 @@ export default function Home() {
 
     const targetIds = jobs.filter((j) => j.status === "queued" || j.status === "error").map((j) => j.id);
 
+    const finishedJobs: WatermarkJob[] =
+      targetIds.length > 1
+        ? await processBatch(targetIds)
+        : await processSequentially(targetIds);
+
+    // Also include any jobs that were already done from a previous run.
+    const alreadyDone = jobs.filter((j) => j.status === "done" && j.resultBlob);
+    const allDone = [...alreadyDone, ...finishedJobs];
+
+    if (allDone.length > 0) {
+      if (downloadMode === "zip") {
+        await downloadAsZip(allDone);
+      } else {
+        await downloadSeparately(allDone);
+      }
+    }
+
+    runningRef.current = false;
+    setIsRunning(false);
+  }
+
+  /**
+   * Single-file path: one request to /api/watermark, returning the
+   * watermarked PDF directly. Kept separate from the batch path (rather
+   * than always routing through /api/watermark-batch) so the common
+   * single-file case gets a plain PDF response back without the overhead
+   * of zipping/unzipping a one-entry archive.
+   */
+  async function processSequentially(targetIds: string[]): Promise<WatermarkJob[]> {
     const finishedJobs: WatermarkJob[] = [];
 
     for (const id of targetIds) {
@@ -126,20 +155,108 @@ export default function Home() {
       }
     }
 
-    // Also include any jobs that were already done from a previous run.
-    const alreadyDone = jobs.filter((j) => j.status === "done" && j.resultBlob);
-    const allDone = [...alreadyDone, ...finishedJobs];
+    return finishedJobs;
+  }
 
-    if (allDone.length > 0) {
-      if (downloadMode === "zip") {
-        await downloadAsZip(allDone);
-      } else {
-        await downloadSeparately(allDone);
+  /**
+   * Multi-file path: ALL target files + the shared watermark go in ONE
+   * request to /api/watermark-batch, which loads/stamps the watermark
+   * once server-side and reuses it for every file (see that route's doc
+   * comment for the full rationale — the watermark setup work is
+   * identical across files in a batch, so doing it N times was pure
+   * waste). The response is a single ZIP; it's unzipped here back into
+   * per-job blobs so the rest of the UI (status badges, the zip/separate
+   * download choice) behaves the same as the single-file path.
+   *
+   * This also fixes what was actually the larger of two compounding
+   * problems: the previous implementation fired one fetch per file and
+   * awaited each before starting the next, so N files always took N
+   * times as long as one file regardless of backend speed — visible in
+   * customer reports as files completing one-by-one with a visible gap
+   * between each, rather than together.
+   */
+  async function processBatch(targetIds: string[]): Promise<WatermarkJob[]> {
+    const targetJobs = targetIds
+      .map((id) => jobs.find((j) => j.id === id))
+      .filter((j): j is WatermarkJob => j !== undefined);
+
+    if (targetJobs.length === 0) return [];
+
+    setJobs((prev) =>
+      prev.map((j) => (targetIds.includes(j.id) ? { ...j, status: "processing" } : j))
+    );
+
+    try {
+      const formData = new FormData();
+      for (const job of targetJobs) {
+        formData.append("file", job.file);
       }
-    }
+      if (watermarkFile) formData.append("watermark", watermarkFile);
 
-    runningRef.current = false;
-    setIsRunning(false);
+      const res = await fetch("/api/watermark-batch", { method: "POST", body: formData });
+
+      if (!res.ok) {
+        let message = "Terjadi kesalahan pada server.";
+        try {
+          const data = await res.json();
+          message = data.error ?? message;
+        } catch {
+          // ignore parse error, keep default message
+        }
+        throw new Error(message);
+      }
+
+      const zipBlob = await res.blob();
+      const zip = await JSZip.loadAsync(zipBlob);
+
+      const failedNames = new Set<string>();
+      const errorEntry = zip.file("_errors.txt");
+      if (errorEntry) {
+        const text = await errorEntry.async("string");
+        for (const line of text.split("\n")) {
+          const name = line.split(":")[0]?.trim();
+          if (name) failedNames.add(name);
+        }
+      }
+
+      const finishedJobs: WatermarkJob[] = [];
+
+      for (const job of targetJobs) {
+        const expectedName = `${job.file.name.replace(/\.pdf$/i, "")}-watermarked.pdf`;
+        const entry = zip.file(expectedName);
+
+        if (!entry || failedNames.has(expectedName)) {
+          setJobs((prev) =>
+            prev.map((j) =>
+              j.id === job.id
+                ? { ...j, status: "error", errorMessage: "Gagal memproses berkas." }
+                : j
+            )
+          );
+          continue;
+        }
+
+        const blob = await entry.async("blob");
+        const updatedJob: WatermarkJob = {
+          ...job,
+          status: "done",
+          resultBlob: blob,
+          resultName: expectedName,
+        };
+        finishedJobs.push(updatedJob);
+        setJobs((prev) => prev.map((j) => (j.id === job.id ? updatedJob : j)));
+      }
+
+      return finishedJobs;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Gagal memproses berkas.";
+      setJobs((prev) =>
+        prev.map((j) =>
+          targetIds.includes(j.id) ? { ...j, status: "error", errorMessage: message } : j
+        )
+      );
+      return [];
+    }
   }
 
   const hasJobs = jobs.length > 0;

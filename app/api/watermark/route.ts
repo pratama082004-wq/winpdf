@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { loadWatermarkAsset, watermarkPdf } from "@/lib/pdf-watermark";
+import { DEFAULT_RASTER_DPI, loadWatermarkAsset, watermarkPdf } from "@/lib/pdf-watermark";
 import { stampDateOnWatermark } from "@/lib/watermark-date-stamp";
 
 // Allow this route to run as long as Vercel's plan permits, since
-// rasterizing at 300 DPI for many pages can take a while.
+// rasterizing many pages can take a while.
 export const maxDuration = 300;
 export const runtime = "nodejs";
 
@@ -41,11 +41,11 @@ export async function POST(req: NextRequest) {
         wmBytes = stamped.bytes;
       }
 
-      watermarkAsset = await loadWatermarkAsset(wmBytes, watermarkFile.name, 300);
+      watermarkAsset = await loadWatermarkAsset(wmBytes, watermarkFile.name, DEFAULT_RASTER_DPI);
     }
 
     const resultBytes = await watermarkPdf(sourceBytes, watermarkAsset, {
-      dpi: 300,
+      dpi: DEFAULT_RASTER_DPI,
     });
 
     const outName = file.name.replace(/\.pdf$/i, "") + "-watermarked.pdf";
