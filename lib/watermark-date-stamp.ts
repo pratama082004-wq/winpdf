@@ -37,13 +37,15 @@ const TEMPLATE_PAGE_HEIGHT_PT = 595;
 // 16pt font size (~80pt wide, see PURPLE_FONT_SIZE below) it still ends
 // with ~5pt of clearance before the stamp box's right border (~290pt).
 const PURPLE_DATE_X = 174.43 + 31;
-// Nudged up 3pt from the raw "K&DM WINTEQ" baseline (488.96): at 14pt,
-// Helvetica numerals extend visibly below their own baseline (descender
-// space numerals don't normally use, but font metrics still reserve it),
-// which was enough to make the date clip into the stamp box's bottom
-// border / the table row directly below it on real drawings. Verified
-// against an actual flagged PDF that this 3pt margin clears the border.
-const PURPLE_DATE_BASELINE_Y = TEMPLATE_PAGE_HEIGHT_PT - (488.96 - 3);
+// Nudged up 3pt from the raw "K&DM WINTEQ" baseline (488.96) originally to
+// clear the stamp box's bottom border. Customer reported the date still
+// sat visibly lower than "K&DM WINTEQ"'s own baseline once positioning was
+// otherwise confirmed correct (left/right gap good) — measured the
+// baseline mismatch directly off the customer's output at ~3pt, so nudged
+// up a further 3pt (total -6pt) to bring the two baselines into visual
+// alignment. Still well clear of the box's bottom border / table row
+// below given the font's ~11.5pt cap-height at 16pt.
+const PURPLE_DATE_BASELINE_Y = TEMPLATE_PAGE_HEIGHT_PT - (488.96 - 6);
 // Bumped up from 14pt: customer asked for the date to read a bit bigger
 // alongside the wider gap above. 16pt is the largest that still clears
 // the stamp box's right border with the new +31pt offset (see

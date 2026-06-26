@@ -185,13 +185,16 @@ export async function loadWatermarkAsset(
   dpi: number,
   opts: { clarityGamma?: number } = {}
 ): Promise<WatermarkAsset> {
-  // Default gamma boost: the source watermark PDF often bakes in fairly
-  // low opacity for some elements (e.g. a small corner stamp), which can
-  // read as a bit fainter than intended once flattened into a raster.
-  // 0.85 is a light touch — it nudges faint elements up without visibly
-  // altering elements whose opacity was already accurate. Applied once
-  // here (not per-page) since the watermark is identical across pages.
-  const clarityGamma = opts.clarityGamma ?? 0.85;
+  // Default gamma: previously 0.85 (a boost — raises low alpha to look
+  // more solid). Customer feedback (after line-sharpening was disabled in
+  // a prior fix, making CAD lines render thinner/softer) was that the
+  // watermark now reads as comparatively too sharp/heavy, "clashing" with
+  // the drawing underneath. Switched to 1.15 — a mild *reduction* instead
+  // of a boost — measured to bring the watermark's flattened gray level
+  // up from ~212/255 to ~234/255 (about 22 points lighter out of 255),
+  // a noticeable softening while keeping "WINTEQ" / "Beyond the Limit"
+  // legible as a watermark rather than fading them out entirely.
+  const clarityGamma = opts.clarityGamma ?? 1.15;
 
   const lower = fileName.toLowerCase();
   if (lower.endsWith(".pdf")) {
