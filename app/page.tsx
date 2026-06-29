@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import JSZip from "jszip";
 import PdfTargetDropzone from "@/components/PdfTargetDropzone";
 import WatermarkDropzone from "@/components/WatermarkDropzone";
@@ -367,9 +368,27 @@ export default function Home() {
         <h1 style={{ fontSize: "1.6rem", fontWeight: 700, color: "var(--ink)", marginBottom: "0.4rem" }}>
           Lock Watermark
         </h1>
-        <p style={{ fontSize: "0.95rem", color: "var(--ink-faint)", marginBottom: "1.75rem" }}>
+        <p style={{ fontSize: "0.95rem", color: "var(--ink-faint)", marginBottom: "0.6rem" }}>
           Watermark + rasterize PDF. 100% Anti-Convert.
         </p>
+        <Link
+          href="/protect"
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: "0.3rem",
+            fontSize: "0.82rem",
+            color: "var(--accent)",
+            textDecoration: "none",
+            marginBottom: "1.75rem",
+          }}
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <rect x="3" y="11" width="18" height="11" rx="2" />
+            <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+          </svg>
+          Butuh password PDF saja? Coba Protect PDF
+        </Link>
 
         <section style={{ marginBottom: "1.75rem" }}>
           <div
