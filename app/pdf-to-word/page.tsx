@@ -13,13 +13,15 @@ function nextId() {
 
 type OcrMode = "auto" | "force" | "off";
 
-// The Python backend service is reached through NEXT_PUBLIC_BACKEND_URL,
-// which Vercel injects automatically for Services-based projects (see
-// vercel.json's experimentalServices) so preview deployments always
-// point at their own matching backend instead of a hardcoded URL. In
-// local dev without that env var, fall back to same-origin — `vercel
-// dev -L` proxies /api/python/* to the local Python service.
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? "";
+// The Python backend (a separate Vercel project, not a Services
+// sub-path -- see backend/main.py's module docstring for why) is
+// reached through NEXT_PUBLIC_BACKEND_URL. Set this in winpdf's Vercel
+// dashboard under Settings > Environment Variables to the backend
+// project's deployment URL, e.g. https://pdf-to-word-backend.vercel.app
+// (no trailing slash). Falls back to a local dev default so `npm run
+// dev` works out of the box when the backend is also running locally
+// on port 8000.
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:8000";
 
 export default function PdfToWordPage() {
   const [jobs, setJobs] = useState<WatermarkJob[]>([]);
@@ -64,7 +66,7 @@ export default function PdfToWordPage() {
       formData.append("file", job.file);
       formData.append("ocr_mode", ocrMode);
 
-      const res = await fetch(`${BACKEND_URL}/api/python/pdf-to-word`, {
+      const res = await fetch(`${BACKEND_URL}/pdf-to-word`, {
         method: "POST",
         body: formData,
       });
