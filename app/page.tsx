@@ -1,11 +1,14 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import JSZip from "jszip";
 import PdfTargetDropzone from "@/components/PdfTargetDropzone";
 import WatermarkDropzone from "@/components/WatermarkDropzone";
 import DownloadModePicker, { type DownloadMode } from "@/components/DownloadModePicker";
+import AdjustmentPanel from "@/components/AdjustmentPanel";
+import PreviewCanvas from "@/components/PreviewCanvas";
 import type { WatermarkJob } from "@/lib/client-utils";
+import { DEFAULT_ADJUSTMENT_PARAMS, type AdjustmentParams } from "@/lib/adjustment-params";
 
 let idCounter = 0;
 function nextId() {
@@ -13,12 +16,31 @@ function nextId() {
   return `job-${idCounter}-${Date.now()}`;
 }
 
+type PreviewData = {
+  baseImage: string;
+  baseWidthPx: number;
+  baseHeightPx: number;
+  watermarkImage: string | null;
+};
+
 export default function Home() {
   const [jobs, setJobs] = useState<WatermarkJob[]>([]);
   const [watermarkFile, setWatermarkFile] = useState<File | null>(null);
   const [downloadMode, setDownloadMode] = useState<DownloadMode>("separate");
   const [isRunning, setIsRunning] = useState(false);
   const runningRef = useRef(false);
+
+  const [adjustmentParams, setAdjustmentParams] = useState<AdjustmentParams>(DEFAULT_ADJUSTMENT_PARAMS);
+  const [showAdjustments, setShowAdjustments] = useState(false);
+  const [preview, setPreview] = useState<PreviewData | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  // Tracks the clarityGamma value the current `preview` was actually
+  // fetched with, so a re-fetch is only triggered when clarityGamma
+  // itself changes (see the debounced effect below) — opacity/sharpen/
+  // quality changes re-render the existing preview entirely client-side
+  // and shouldn't trigger a network call.
+  const lastFetchedGammaRef = useRef<number | null>(null);
 
   const addFiles = useCallback((files: File[]) => {
     setJobs((prev) => [
@@ -34,6 +56,56 @@ export default function Home() {
   function clearAllJobs() {
     setJobs([]);
   }
+
+  /**
+   * Fetches the raw preview materials (base page 1 raster + watermark
+   * raster) once for the current first job + watermark file, baked with
+   * the given clarityGamma. Re-fetched only when the source file,
+   * watermark file, or clarityGamma actually changes — see
+   * lastFetchedGammaRef's comment for why clarityGamma specifically
+   * needs a server round-trip while the other sliders don't.
+   */
+  const fetchPreview = useCallback(async (file: File, wmFile: File | null, clarityGamma: number) => {
+    setPreviewLoading(true);
+    setPreviewError(null);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      if (wmFile) formData.append("watermark", wmFile);
+      formData.append("clarityGamma", String(clarityGamma));
+
+      const res = await fetch("/api/watermark-preview", { method: "POST", body: formData });
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.error ?? "Gagal memuat pratinjau.");
+      }
+      const data = (await res.json()) as PreviewData;
+      setPreview(data);
+      lastFetchedGammaRef.current = clarityGamma;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Gagal memuat pratinjau.";
+      setPreviewError(message);
+    } finally {
+      setPreviewLoading(false);
+    }
+  }, []);
+
+  // Fetch a fresh preview whenever the panel opens, the target file set
+  // changes, the watermark changes, or — debounced — clarityGamma moves.
+  // Other sliders (opacity, line-sharpen, jpeg quality) deliberately don't
+  // appear in this dependency list: they're applied live in PreviewCanvas
+  // without touching the network.
+  useEffect(() => {
+    if (!showAdjustments || jobs.length === 0) return;
+    const firstFile = jobs[0].file;
+
+    const handle = setTimeout(() => {
+      fetchPreview(firstFile, watermarkFile, adjustmentParams.clarityGamma);
+    }, 350);
+
+    return () => clearTimeout(handle);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showAdjustments, jobs.length > 0 ? jobs[0].id : null, watermarkFile, adjustmentParams.clarityGamma, fetchPreview]);
 
   function triggerDownload(blob: Blob, name: string) {
     const url = URL.createObjectURL(blob);
@@ -105,6 +177,17 @@ export default function Home() {
     setIsRunning(false);
   }
 
+  /** Appends the current adjustment slider values onto a FormData about
+   * to be sent to /api/watermark or /api/watermark-batch — keeps both
+   * call sites in sync rather than repeating the same 4 .append() calls
+   * twice. */
+  function appendAdjustmentParams(formData: FormData) {
+    formData.append("opacity", String(adjustmentParams.opacity));
+    formData.append("clarityGamma", String(adjustmentParams.clarityGamma));
+    formData.append("lineSharpenIntensity", String(adjustmentParams.lineSharpenIntensity));
+    formData.append("jpegQuality", String(adjustmentParams.jpegQuality));
+  }
+
   /**
    * Single-file path: one request to /api/watermark, returning the
    * watermarked PDF directly. Kept separate from the batch path (rather
@@ -125,6 +208,7 @@ export default function Home() {
         const formData = new FormData();
         formData.append("file", job.file);
         if (watermarkFile) formData.append("watermark", watermarkFile);
+        appendAdjustmentParams(formData);
 
         const res = await fetch("/api/watermark", { method: "POST", body: formData });
 
@@ -157,6 +241,7 @@ export default function Home() {
 
     return finishedJobs;
   }
+
 
   /**
    * Multi-file path: ALL target files + the shared watermark go in ONE
@@ -192,6 +277,7 @@ export default function Home() {
         formData.append("file", job.file);
       }
       if (watermarkFile) formData.append("watermark", watermarkFile);
+      appendAdjustmentParams(formData);
 
       const res = await fetch("/api/watermark-batch", { method: "POST", body: formData });
 
@@ -334,8 +420,94 @@ export default function Home() {
         </section>
 
         <section style={{ marginBottom: "1.75rem" }}>
+          <button
+            type="button"
+            onClick={() => setShowAdjustments((v) => !v)}
+            disabled={isRunning}
+            style={{
+              width: "100%",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              background: "none",
+              border: "none",
+              padding: "0.4rem 0",
+              cursor: isRunning ? "default" : "pointer",
+            }}
+          >
+            <span style={{ fontSize: "0.95rem", fontWeight: 500, color: "var(--ink)" }}>
+              3. Pengaturan Lanjutan{" "}
+              <span style={{ fontSize: "0.78rem", fontWeight: 400, color: "var(--ink-faint)" }}>
+                (opsional)
+              </span>
+            </span>
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              style={{
+                color: "var(--ink-faint)",
+                transform: showAdjustments ? "rotate(180deg)" : "rotate(0deg)",
+                transition: "transform 150ms ease",
+              }}
+            >
+              <path d="M6 9l6 6 6-6" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+
+          {showAdjustments && (
+            <div style={{ marginTop: "1rem" }}>
+              {jobs.length > 0 ? (
+                <div style={{ marginBottom: "1.25rem" }}>
+                  <p style={{ fontSize: "0.85rem", fontWeight: 600, color: "var(--ink)", marginBottom: "0.5rem" }}>
+                    Pratinjau (halaman 1 dari &ldquo;{jobs[0].file.name}&rdquo;)
+                  </p>
+                  {previewError ? (
+                    <p style={{ fontSize: "0.82rem", color: "#b91c1c" }}>{previewError}</p>
+                  ) : preview ? (
+                    <PreviewCanvas
+                      baseImageUrl={preview.baseImage}
+                      baseWidthPx={preview.baseWidthPx}
+                      baseHeightPx={preview.baseHeightPx}
+                      watermarkImageUrl={preview.watermarkImage}
+                      params={adjustmentParams}
+                    />
+                  ) : (
+                    <div
+                      style={{
+                        borderRadius: "10px",
+                        border: "1px solid var(--line)",
+                        padding: "2rem",
+                        textAlign: "center",
+                        fontSize: "0.82rem",
+                        color: "var(--ink-faint)",
+                      }}
+                    >
+                      {previewLoading ? "Memuat pratinjau…" : "Menyiapkan pratinjau…"}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <p style={{ fontSize: "0.82rem", color: "var(--ink-faint)", marginBottom: "1.25rem" }}>
+                  Tambahkan PDF gambar teknik di atas untuk melihat pratinjau.
+                </p>
+              )}
+
+              <AdjustmentPanel
+                value={adjustmentParams}
+                onChange={setAdjustmentParams}
+                disabled={isRunning}
+              />
+            </div>
+          )}
+        </section>
+
+        <section style={{ marginBottom: "1.75rem" }}>
           <p style={{ fontSize: "0.95rem", fontWeight: 500, color: "var(--ink)", marginBottom: "0.7rem" }}>
-            3. Opsi Unduhan
+            4. Opsi Unduhan
           </p>
           <DownloadModePicker value={downloadMode} onChange={setDownloadMode} disabled={isRunning} />
         </section>

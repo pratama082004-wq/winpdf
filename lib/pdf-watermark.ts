@@ -21,19 +21,21 @@ const PDF_BASE_DPI = 72; // PDF user-space unit is always 1/72 inch
 // number that could drift out of sync with this one.
 export const DEFAULT_RASTER_DPI = 200;
 
-// Master switch for the line-darkening pass (see sharpenRasterLines below
-// for the full rationale). Turned OFF here per customer feedback: on a
-// real drawing (PIN, 612027-01-02-06-08-R1) the embedded barcode's bars
-// — only 2-3px wide/spaced at 300 DPI — were measurably fused together by
-// the 3x3 min-filter (run-length analysis showed dark runs ballooning to
-// 10-39px with the gaps between them shrinking to a constant 2-3px,
-// versus a healthy varied 2-7px pattern on a known-good reference
-// drawing), making it unscannable. CAD line crispness was traded off
-// against barcode integrity, and the customer asked to prioritize the
-// latter and match the look of a reference file with this pass off.
-// Flip back to `true` to re-enable if dimension-line crispness needs
-// revisiting later — every call site below reads this one flag.
-const ENABLE_LINE_SHARPENING = false;
+// Default line-darkening intensity (see sharpenRasterLines for the full
+// rationale and the barcode-fusing caveat). Stays 0 (off) by default —
+// per customer feedback this previously caused a real barcode to become
+// unscannable when left on unconditionally. Now exposed as a 0–1
+// intensity callers can opt into explicitly (see watermarkPdf's
+// lineSharpenIntensity option) instead of a hardcoded all-or-nothing flag.
+const DEFAULT_LINE_SHARPEN_INTENSITY = 0;
+
+// Default JPEG quality (0-100) for the final flattened page. 90 was the
+// value verified earlier (see compositeWatermarkOnRaster's doc comment)
+// to introduce no visible block artifacts and keep an embedded barcode's
+// run-length pattern healthy. Exposed as a tunable so a user-facing
+// quality slider doesn't need a second hardcoded number that could drift
+// out of sync with this one.
+const DEFAULT_JPEG_QUALITY = 90;
 
 // Resolve pdfjs's bundled standard fonts / cmaps so text renders correctly
 // when the page uses the 14 standard PDF fonts (Helvetica, Times, etc.)
@@ -130,7 +132,8 @@ async function renderPdfPageTransparentToCanvas(
 export async function renderPdfPageToRaster(
   pdfBytes: Uint8Array,
   pageIndex: number,
-  dpi: number
+  dpi: number,
+  jpegQuality: number = DEFAULT_JPEG_QUALITY
 ): Promise<RasterPage> {
   const loadingTask = pdfjsLib.getDocument({
     // IMPORTANT: pdf.js takes ownership of the buffer it's given and may
@@ -159,7 +162,7 @@ export async function renderPdfPageToRaster(
     await page.render({ canvasContext: context, viewport } as any).promise;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const buffer: Buffer = (canvas as any).toBuffer("image/jpeg", 90);
+    const buffer: Buffer = (canvas as any).toBuffer("image/jpeg", jpegQuality);
 
     return {
       buffer,
@@ -208,8 +211,13 @@ export async function getPdfPageCount(pdfBytes: Uint8Array): Promise<number> {
  * isn't exported in a convenient form; callers get it from
  * pdfjsLib.getDocument(...).promise.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function renderPageFromLoadedDoc(doc: any, pageIndex: number, dpi: number): Promise<RasterPage> {
+async function renderPageFromLoadedDoc(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  doc: any,
+  pageIndex: number,
+  dpi: number,
+  jpegQuality: number = DEFAULT_JPEG_QUALITY
+): Promise<RasterPage> {
   const page = await doc.getPage(pageIndex + 1); // pdfjs pages are 1-indexed
   const scale = dpi / PDF_BASE_DPI;
   const viewport = page.getViewport({ scale });
@@ -221,7 +229,7 @@ async function renderPageFromLoadedDoc(doc: any, pageIndex: number, dpi: number)
   await page.render({ canvasContext: context, viewport } as any).promise;
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const buffer: Buffer = (canvas as any).toBuffer("image/jpeg", 90);
+  const buffer: Buffer = (canvas as any).toBuffer("image/jpeg", jpegQuality);
 
   return {
     buffer,
@@ -376,9 +384,11 @@ async function loadWatermarkImageCached(buffer: Buffer): ReturnType<typeof loadI
 export async function compositeWatermarkOnRaster(
   pageRaster: RasterPage,
   watermark: WatermarkAsset,
-  opts: { opacity?: number } = {}
+  opts: { opacity?: number; lineSharpenIntensity?: number; jpegQuality?: number } = {}
 ): Promise<Buffer> {
   const opacity = opts.opacity ?? 1;
+  const lineSharpenIntensity = opts.lineSharpenIntensity ?? DEFAULT_LINE_SHARPEN_INTENSITY;
+  const jpegQuality = opts.jpegQuality ?? DEFAULT_JPEG_QUALITY;
 
   const canvas = createCanvas(pageRaster.widthPx, pageRaster.heightPx);
   const ctx = canvas.getContext("2d");
@@ -417,9 +427,7 @@ export async function compositeWatermarkOnRaster(
   ctx.drawImage(wmImg, dx, dy, drawW, drawH);
   ctx.globalAlpha = 1;
 
-  if (ENABLE_LINE_SHARPENING) {
-    sharpenRasterLines(canvas);
-  }
+  sharpenRasterLines(canvas, lineSharpenIntensity);
 
   // JPEG instead of PNG for the final flattened page: measured directly
   // against this exact image, canvas.toBuffer("image/png") took ~660ms vs
@@ -433,7 +441,7 @@ export async function compositeWatermarkOnRaster(
   // are images, not vector line art), so JPEG's lossy compression doesn't
   // give up anything the format wasn't already going to flatten away.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return (canvas as any).toBuffer("image/jpeg", 90);
+  return (canvas as any).toBuffer("image/jpeg", jpegQuality);
 }
 
 /**
@@ -466,16 +474,36 @@ export async function compositeWatermarkOnRaster(
  * can only get darker, never lighter), so pale watermark elements stay
  * exactly as faint as they were designed to be; this only restores
  * contrast that the drawing's own dark lines lose to viewer downscaling.
+ *
+ * `intensity` (0–1) blends between the original pixel (0) and the full
+ * min-filter result (1) — added so this can be exposed as a user-facing
+ * slider rather than a hard on/off switch. IMPORTANT CAVEAT, learned the
+ * hard way on a real customer file: at full intensity (or even partial),
+ * this measurably fuses together the thin, closely-spaced bars of an
+ * embedded barcode (run-length analysis on one real case showed bars
+ * ballooning from a healthy 1-7px to 10-39px, with gaps shrinking to a
+ * constant 2-3px — unscannable). The default for this feature stays 0
+ * (off) for that reason; intensity > 0 is an opt-in tradeoff the user is
+ * choosing knowingly, not something this function can make safe on its
+ * own. There's no "safe" non-zero floor to recommend instead — the same
+ * intensity that's invisible on one drawing's barcode can be destructive
+ * on another's, since it depends entirely on how tightly spaced that
+ * specific barcode's bars happen to be.
  */
-function sharpenRasterLines(canvas: Canvas): void {
+function sharpenRasterLines(canvas: Canvas, intensity: number = 1): void {
+  if (intensity <= 0) return;
+
   const ctx = canvas.getContext("2d");
   const { width, height } = canvas;
   const imageData = ctx.getImageData(0, 0, width, height);
   const src = imageData.data;
   const out = new Uint8ClampedArray(src.length);
 
+  const clampedIntensity = Math.min(1, intensity);
+
   // 3x3 min filter per RGB channel (alpha passed through unchanged — the
-  // pages this runs on are always fully opaque, so alpha is always 255).
+  // pages this runs on are always fully opaque, so alpha is always 255),
+  // then blended back toward the original by (1 - intensity).
   for (let y = 0; y < height; y++) {
     const yStart = Math.max(0, y - 1);
     const yEnd = Math.min(height - 1, y + 1);
@@ -500,9 +528,15 @@ function sharpenRasterLines(canvas: Canvas): void {
       }
 
       const outIdx = (y * width + x) * 4;
-      out[outIdx] = minR;
-      out[outIdx + 1] = minG;
-      out[outIdx + 2] = minB;
+      if (clampedIntensity >= 1) {
+        out[outIdx] = minR;
+        out[outIdx + 1] = minG;
+        out[outIdx + 2] = minB;
+      } else {
+        out[outIdx] = src[outIdx] + (minR - src[outIdx]) * clampedIntensity;
+        out[outIdx + 1] = src[outIdx + 1] + (minG - src[outIdx + 1]) * clampedIntensity;
+        out[outIdx + 2] = src[outIdx + 2] + (minB - src[outIdx + 2]) * clampedIntensity;
+      }
       out[outIdx + 3] = src[outIdx + 3];
     }
   }
@@ -518,15 +552,19 @@ function sharpenRasterLines(canvas: Canvas): void {
  * same line-darkening pass). Outputs JPEG for the same reason as
  * {@link renderPdfPageToRaster} — see that function's doc comment.
  */
-async function sharpenRasterBuffer(rasterBuffer: Buffer): Promise<Buffer> {
+async function sharpenRasterBuffer(
+  rasterBuffer: Buffer,
+  intensity: number = DEFAULT_LINE_SHARPEN_INTENSITY,
+  jpegQuality: number = DEFAULT_JPEG_QUALITY
+): Promise<Buffer> {
   const img = await loadImage(rasterBuffer);
   const canvas = createCanvas(img.width, img.height);
   const ctx = canvas.getContext("2d");
   ctx.imageSmoothingEnabled = false;
   ctx.drawImage(img, 0, 0);
-  sharpenRasterLines(canvas);
+  sharpenRasterLines(canvas, intensity);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return (canvas as any).toBuffer("image/jpeg", 90);
+  return (canvas as any).toBuffer("image/jpeg", jpegQuality);
 }
 
 /**
@@ -541,12 +579,23 @@ export async function watermarkPdf(
   opts: {
     dpi?: number;
     opacity?: number;
+    /**
+     * 0–1 intensity for the line-darkening pass (see sharpenRasterLines).
+     * Defaults to 0 (off) — see that function's doc comment for why a
+     * non-zero value is an explicit, knowing tradeoff against barcode
+     * legibility, not a "safe" enhancement.
+     */
+    lineSharpenIntensity?: number;
+    /** JPEG quality (0-100) for the final flattened pages. Defaults to 90. */
+    jpegQuality?: number;
     onProgress?: (pageIndex: number, totalPages: number) => void;
     /** Max pages rasterized concurrently. Higher = faster but more memory. */
     concurrency?: number;
   } = {}
 ): Promise<Uint8Array> {
   const dpi = opts.dpi ?? DEFAULT_RASTER_DPI;
+  const lineSharpenIntensity = opts.lineSharpenIntensity ?? DEFAULT_LINE_SHARPEN_INTENSITY;
+  const jpegQuality = opts.jpegQuality ?? DEFAULT_JPEG_QUALITY;
   // Default raised from 3 to 8: re-measured directly against a 44-page
   // document (matching a real customer report of slow multi-page
   // processing), concurrency=8 averaged ~35s versus ~45s at concurrency=1
@@ -582,13 +631,15 @@ export async function watermarkPdf(
     // against the same loaded pdfjs document were verified to work
     // correctly (each returns its own independent canvas).
     const processPage = async (i: number): Promise<{ buffer: Buffer; widthPt: number; heightPt: number }> => {
-      const raster = await renderPageFromLoadedDoc(sourceDoc, i, dpi);
+      const raster = await renderPageFromLoadedDoc(sourceDoc, i, dpi, jpegQuality);
       const finalBuffer = watermark
         ? await compositeWatermarkOnRaster(raster, watermark, {
             opacity: opts.opacity,
+            lineSharpenIntensity,
+            jpegQuality,
           })
-        : ENABLE_LINE_SHARPENING
-          ? await sharpenRasterBuffer(raster.buffer)
+        : lineSharpenIntensity > 0
+          ? await sharpenRasterBuffer(raster.buffer, lineSharpenIntensity, jpegQuality)
           : raster.buffer;
       opts.onProgress?.(i + 1, totalPages);
       return { buffer: finalBuffer, widthPt: raster.widthPt, heightPt: raster.heightPt };

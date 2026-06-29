@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import JSZip from "jszip";
 import { DEFAULT_RASTER_DPI, loadWatermarkAsset, watermarkPdf } from "@/lib/pdf-watermark";
 import { stampDateOnWatermark } from "@/lib/watermark-date-stamp";
+import { parseAdjustmentParamsFromFormData } from "@/lib/adjustment-params";
 
 // Allow this route to run as long as Vercel's plan permits, since
 // rasterizing many files/pages can take a while.
@@ -38,6 +39,7 @@ export async function POST(req: NextRequest) {
     const formData = await req.formData();
     const files = formData.getAll("file").filter((f): f is File => f instanceof File);
     const watermarkFile = formData.get("watermark");
+    const params = parseAdjustmentParamsFromFormData(formData);
 
     if (files.length === 0) {
       return NextResponse.json(
@@ -64,7 +66,9 @@ export async function POST(req: NextRequest) {
 
       // Loaded ONCE for the whole batch — this is the rasterized,
       // gamma-adjusted watermark asset reused for every file below.
-      watermarkAsset = await loadWatermarkAsset(wmBytes, watermarkFile.name, DEFAULT_RASTER_DPI);
+      watermarkAsset = await loadWatermarkAsset(wmBytes, watermarkFile.name, DEFAULT_RASTER_DPI, {
+        clarityGamma: params.clarityGamma,
+      });
     }
 
     const results: { name: string; bytes: Uint8Array; error?: string }[] = new Array(files.length);
@@ -74,7 +78,12 @@ export async function POST(req: NextRequest) {
       const outName = file.name.replace(/\.pdf$/i, "") + "-watermarked.pdf";
       try {
         const sourceBytes = new Uint8Array(await file.arrayBuffer());
-        const resultBytes = await watermarkPdf(sourceBytes, watermarkAsset, { dpi: DEFAULT_RASTER_DPI });
+        const resultBytes = await watermarkPdf(sourceBytes, watermarkAsset, {
+          dpi: DEFAULT_RASTER_DPI,
+          opacity: params.opacity / 100,
+          lineSharpenIntensity: params.lineSharpenIntensity / 100,
+          jpegQuality: params.jpegQuality,
+        });
         results[index] = { name: outName, bytes: resultBytes };
       } catch (err) {
         const message = err instanceof Error ? err.message : "Gagal memproses berkas.";

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { DEFAULT_RASTER_DPI, loadWatermarkAsset, watermarkPdf } from "@/lib/pdf-watermark";
 import { stampDateOnWatermark } from "@/lib/watermark-date-stamp";
+import { parseAdjustmentParamsFromFormData } from "@/lib/adjustment-params";
 
 // Allow this route to run as long as Vercel's plan permits, since
 // rasterizing many pages can take a while.
@@ -12,6 +13,7 @@ export async function POST(req: NextRequest) {
     const formData = await req.formData();
     const file = formData.get("file");
     const watermarkFile = formData.get("watermark");
+    const params = parseAdjustmentParamsFromFormData(formData);
 
     if (!file || !(file instanceof File)) {
       return NextResponse.json(
@@ -41,11 +43,16 @@ export async function POST(req: NextRequest) {
         wmBytes = stamped.bytes;
       }
 
-      watermarkAsset = await loadWatermarkAsset(wmBytes, watermarkFile.name, DEFAULT_RASTER_DPI);
+      watermarkAsset = await loadWatermarkAsset(wmBytes, watermarkFile.name, DEFAULT_RASTER_DPI, {
+        clarityGamma: params.clarityGamma,
+      });
     }
 
     const resultBytes = await watermarkPdf(sourceBytes, watermarkAsset, {
       dpi: DEFAULT_RASTER_DPI,
+      opacity: params.opacity / 100,
+      lineSharpenIntensity: params.lineSharpenIntensity / 100,
+      jpegQuality: params.jpegQuality,
     });
 
     const outName = file.name.replace(/\.pdf$/i, "") + "-watermarked.pdf";
