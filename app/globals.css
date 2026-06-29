@@ -53,3 +53,25 @@ body {
 input[type="file"].hidden {
   display: none;
 }
+
+/* Inline numeric edit box used by AdjustmentPanel's click-to-edit value
+   label. Native number-input spin buttons (the up/down stepper box seen
+   in Chrome/Edge) look dated and clash with the custom-styled range
+   slider right below it, so they're removed here in favor of a plain,
+   borderless-looking field that only reveals its outline on focus —
+   matching how the rest of this panel (sliders, buttons) stays quiet
+   until interacted with. */
+.adjustment-value-input {
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+.adjustment-value-input::-webkit-outer-spin-button,
+.adjustment-value-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.adjustment-value-input:focus {
+  outline: none;
+}

@@ -98,6 +98,7 @@ function SliderRow({ label, hint, warning, value, min, max, step, unit, disabled
               step={step}
               value={draft}
               disabled={disabled}
+              className="adjustment-value-input"
               onChange={(e) => setDraft(e.target.value)}
               onBlur={() => {
                 commit();
@@ -114,14 +115,17 @@ function SliderRow({ label, hint, warning, value, min, max, step, unit, disabled
               style={{
                 width: "3.6rem",
                 fontSize: "0.82rem",
-                color: "var(--ink-faint)",
+                color: "var(--accent)",
+                fontWeight: 600,
                 fontFamily: "monospace",
                 textAlign: "right",
                 background: "var(--card-bg)",
-                border: "1px solid var(--line)",
-                borderRadius: "0.3rem",
-                padding: "0.1rem 0.3rem",
+                border: "1px solid var(--accent)",
+                boxShadow: "0 0 0 3px rgba(37, 84, 199, 0.15)",
+                borderRadius: "0.4rem",
+                padding: "0.1rem 0.35rem",
                 opacity: disabled ? 0.5 : 1,
+                transition: "box-shadow 0.15s ease",
               }}
             />
           ) : (
@@ -144,12 +148,19 @@ function SliderRow({ label, hint, warning, value, min, max, step, unit, disabled
                 color: "var(--ink-faint)",
                 fontFamily: "monospace",
                 textAlign: "right",
-                padding: "0.1rem 0.3rem",
-                borderRadius: "0.3rem",
+                padding: "0.1rem 0.35rem",
+                borderRadius: "0.4rem",
                 border: "1px solid transparent",
                 opacity: disabled ? 0.5 : 1,
                 cursor: disabled ? "default" : "text",
                 userSelect: "none",
+                transition: "background 0.15s ease",
+              }}
+              onMouseEnter={(e) => {
+                if (!disabled) e.currentTarget.style.background = "var(--page-bg)";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = "transparent";
               }}
             >
               {draft}
