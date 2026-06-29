@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { DEFAULT_RASTER_DPI, loadWatermarkAsset, watermarkPdf } from "@/lib/pdf-watermark";
 import { stampDateOnWatermark } from "@/lib/watermark-date-stamp";
-import { parseAdjustmentParamsFromFormData } from "@/lib/adjustment-params";
+import { clarityToGamma, parseAdjustmentParamsFromFormData } from "@/lib/adjustment-params";
 
 // Allow this route to run as long as Vercel's plan permits, since
 // rasterizing many pages can take a while.
@@ -44,7 +44,7 @@ export async function POST(req: NextRequest) {
       }
 
       watermarkAsset = await loadWatermarkAsset(wmBytes, watermarkFile.name, DEFAULT_RASTER_DPI, {
-        clarityGamma: params.clarityGamma,
+        clarityGamma: clarityToGamma(params.clarity),
       });
     }
 

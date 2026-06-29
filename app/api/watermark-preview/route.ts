@@ -5,17 +5,18 @@ import {
   renderPdfPageToRaster,
 } from "@/lib/pdf-watermark";
 import { stampDateOnWatermark } from "@/lib/watermark-date-stamp";
+import { clarityToGamma } from "@/lib/adjustment-params";
 
 export const maxDuration = 60;
 export const runtime = "nodejs";
 
 /**
  * Returns the raw, un-composited materials for live-previewing the
- * adjustment sliders (opacity, clarity/gamma, line-sharpen intensity,
- * JPEG quality): the first page of the target PDF rasterized once, and
- * the watermark rasterized once (with clarityGamma already baked in,
- * since that one has to happen server-side — see below). Both come back
- * as base64 data URLs.
+ * adjustment sliders (opacity, clarity, line-sharpen intensity, JPEG
+ * quality): the first page of the target PDF rasterized once, and the
+ * watermark rasterized once (with clarity already baked in, since that
+ * one has to happen server-side — see below). Both come back as base64
+ * data URLs.
  *
  * Why composite client-side instead of re-rendering server-side on every
  * slider tick: re-running the full rasterize pipeline per adjustment
@@ -27,26 +28,25 @@ export const runtime = "nodejs";
  * pass for line-sharpen, canvas.toBlob's quality param for JPEG) without
  * touching the network again.
  *
- * clarityGamma is the one exception baked in here rather than client-side:
- * it's applied to the watermark's alpha channel before rasterization
- * settles (see boostWatermarkAlpha), and re-deriving that cheaply in the
- * browser would mean either shipping that pixel-loop logic twice (server
- * + client) or sending an unprocessed watermark and asking the client to
- * redo gamma math on every tick — simpler to let the slider's clarityGamma
- * value trigger a fresh (but still cheap, watermark-only) server call,
- * debounced on the client side, while opacity/sharpen/quality — true
- * per-frame sliders — stay fully client-side.
+ * clarity is the one exception baked in here rather than client-side:
+ * it's converted to a gamma value (see clarityToGamma) and applied to the
+ * watermark's alpha channel before rasterization settles (see
+ * boostWatermarkAlpha), and re-deriving that cheaply in the browser would
+ * mean either shipping that pixel-loop logic twice (server + client) or
+ * sending an unprocessed watermark and asking the client to redo gamma
+ * math on every tick — simpler to let the slider's clarity value trigger
+ * a fresh (but still cheap, watermark-only) server call, debounced on the
+ * client side, while opacity/sharpen/quality — true per-frame sliders —
+ * stay fully client-side.
  */
 export async function POST(req: NextRequest) {
   try {
     const formData = await req.formData();
     const file = formData.get("file");
     const watermarkFile = formData.get("watermark");
-    const clarityGammaRaw = formData.get("clarityGamma");
-    const clarityGamma =
-      typeof clarityGammaRaw === "string" && clarityGammaRaw.trim() !== ""
-        ? Number(clarityGammaRaw)
-        : undefined;
+    const clarityRaw = formData.get("clarity");
+    const clarity =
+      typeof clarityRaw === "string" && clarityRaw.trim() !== "" ? Number(clarityRaw) : undefined;
 
     if (!file || !(file instanceof File)) {
       return NextResponse.json({ error: "File PDF tidak ditemukan." }, { status: 400 });
@@ -72,7 +72,7 @@ export async function POST(req: NextRequest) {
         wmBytes,
         watermarkFile.name,
         DEFAULT_RASTER_DPI,
-        clarityGamma !== undefined && Number.isFinite(clarityGamma) ? { clarityGamma } : {}
+        clarity !== undefined && Number.isFinite(clarity) ? { clarityGamma: clarityToGamma(clarity) } : {}
       );
       watermarkDataUrl = `data:image/png;base64,${watermarkAsset.buffer.toString("base64")}`;
     }

@@ -72,7 +72,7 @@ function SliderRow({ label, hint, warning, value, min, max, step, unit, disabled
 export default function AdjustmentPanel({ value, onChange, disabled }: Props) {
   const isDefault =
     value.opacity === DEFAULT_ADJUSTMENT_PARAMS.opacity &&
-    value.clarityGamma === DEFAULT_ADJUSTMENT_PARAMS.clarityGamma &&
+    value.clarity === DEFAULT_ADJUSTMENT_PARAMS.clarity &&
     value.lineSharpenIntensity === DEFAULT_ADJUSTMENT_PARAMS.lineSharpenIntensity &&
     value.jpegQuality === DEFAULT_ADJUSTMENT_PARAMS.jpegQuality;
 
@@ -120,12 +120,13 @@ export default function AdjustmentPanel({ value, onChange, disabled }: Props) {
       <SliderRow
         label="Ketajaman / Kontras Watermark"
         hint="Geser ke kiri = watermark lebih pudar/halus. Ke kanan = lebih solid/tajam."
-        value={value.clarityGamma}
-        min={ADJUSTMENT_RANGES.clarityGamma.min}
-        max={ADJUSTMENT_RANGES.clarityGamma.max}
-        step={ADJUSTMENT_RANGES.clarityGamma.step}
+        value={value.clarity}
+        min={ADJUSTMENT_RANGES.clarity.min}
+        max={ADJUSTMENT_RANGES.clarity.max}
+        step={ADJUSTMENT_RANGES.clarity.step}
+        unit="%"
         disabled={disabled}
-        onChange={(v) => set("clarityGamma", v)}
+        onChange={(v) => set("clarity", v)}
       />
 
       <SliderRow

@@ -35,12 +35,12 @@ export default function Home() {
   const [preview, setPreview] = useState<PreviewData | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
-  // Tracks the clarityGamma value the current `preview` was actually
-  // fetched with, so a re-fetch is only triggered when clarityGamma
-  // itself changes (see the debounced effect below) — opacity/sharpen/
-  // quality changes re-render the existing preview entirely client-side
-  // and shouldn't trigger a network call.
-  const lastFetchedGammaRef = useRef<number | null>(null);
+  // Tracks the clarity value the current `preview` was actually fetched
+  // with, so a re-fetch is only triggered when clarity itself changes
+  // (see the debounced effect below) — opacity/sharpen/quality changes
+  // re-render the existing preview entirely client-side and shouldn't
+  // trigger a network call.
+  const lastFetchedClarityRef = useRef<number | null>(null);
 
   const addFiles = useCallback((files: File[]) => {
     setJobs((prev) => [
@@ -60,19 +60,22 @@ export default function Home() {
   /**
    * Fetches the raw preview materials (base page 1 raster + watermark
    * raster) once for the current first job + watermark file, baked with
-   * the given clarityGamma. Re-fetched only when the source file,
-   * watermark file, or clarityGamma actually changes — see
-   * lastFetchedGammaRef's comment for why clarityGamma specifically
-   * needs a server round-trip while the other sliders don't.
+   * the given clarity. Re-fetched only when the source file, watermark
+   * file, or clarity actually changes — see lastFetchedClarityRef's
+   * comment for why clarity specifically needs a server round-trip while
+   * the other sliders don't. The server expects the same 0-100 "clarity"
+   * scale the slider uses (not raw gamma) and converts internally via
+   * clarityToGamma — see that function's doc comment in
+   * lib/adjustment-params.ts for why that conversion exists.
    */
-  const fetchPreview = useCallback(async (file: File, wmFile: File | null, clarityGamma: number) => {
+  const fetchPreview = useCallback(async (file: File, wmFile: File | null, clarity: number) => {
     setPreviewLoading(true);
     setPreviewError(null);
     try {
       const formData = new FormData();
       formData.append("file", file);
       if (wmFile) formData.append("watermark", wmFile);
-      formData.append("clarityGamma", String(clarityGamma));
+      formData.append("clarity", String(clarity));
 
       const res = await fetch("/api/watermark-preview", { method: "POST", body: formData });
       if (!res.ok) {
@@ -81,7 +84,7 @@ export default function Home() {
       }
       const data = (await res.json()) as PreviewData;
       setPreview(data);
-      lastFetchedGammaRef.current = clarityGamma;
+      lastFetchedClarityRef.current = clarity;
     } catch (err) {
       const message = err instanceof Error ? err.message : "Gagal memuat pratinjau.";
       setPreviewError(message);
@@ -91,7 +94,7 @@ export default function Home() {
   }, []);
 
   // Fetch a fresh preview whenever the panel opens, the target file set
-  // changes, the watermark changes, or — debounced — clarityGamma moves.
+  // changes, the watermark changes, or — debounced — clarity moves.
   // Other sliders (opacity, line-sharpen, jpeg quality) deliberately don't
   // appear in this dependency list: they're applied live in PreviewCanvas
   // without touching the network.
@@ -100,12 +103,12 @@ export default function Home() {
     const firstFile = jobs[0].file;
 
     const handle = setTimeout(() => {
-      fetchPreview(firstFile, watermarkFile, adjustmentParams.clarityGamma);
+      fetchPreview(firstFile, watermarkFile, adjustmentParams.clarity);
     }, 350);
 
     return () => clearTimeout(handle);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showAdjustments, jobs.length > 0 ? jobs[0].id : null, watermarkFile, adjustmentParams.clarityGamma, fetchPreview]);
+  }, [showAdjustments, jobs.length > 0 ? jobs[0].id : null, watermarkFile, adjustmentParams.clarity, fetchPreview]);
 
   function triggerDownload(blob: Blob, name: string) {
     const url = URL.createObjectURL(blob);
@@ -183,7 +186,7 @@ export default function Home() {
    * twice. */
   function appendAdjustmentParams(formData: FormData) {
     formData.append("opacity", String(adjustmentParams.opacity));
-    formData.append("clarityGamma", String(adjustmentParams.clarityGamma));
+    formData.append("clarity", String(adjustmentParams.clarity));
     formData.append("lineSharpenIntensity", String(adjustmentParams.lineSharpenIntensity));
     formData.append("jpegQuality", String(adjustmentParams.jpegQuality));
   }
