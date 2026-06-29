@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useRef, useState } from "react";
 import { ADJUSTMENT_RANGES, AdjustmentParams, DEFAULT_ADJUSTMENT_PARAMS } from "@/lib/adjustment-params";
 
 type Props = {
@@ -21,15 +22,143 @@ type SliderRowProps = {
   onChange: (value: number) => void;
 };
 
+function clampToRange(raw: number, min: number, max: number, step: number): number {
+  if (Number.isNaN(raw)) return min;
+  const clamped = Math.min(max, Math.max(min, raw));
+  // Snap to the same step granularity the slider uses, so a typed value
+  // and a dragged value can never disagree on what's a "valid" number.
+  const snapped = Math.round(clamped / step) * step;
+  // Round-trip through a fixed precision to avoid float artifacts like
+  // 0.1 + 0.2 = 0.30000000000000004 showing up in the input box.
+  return Math.round(snapped * 100) / 100;
+}
+
 function SliderRow({ label, hint, warning, value, min, max, step, unit, disabled, onChange }: SliderRowProps) {
+  // The text box needs its own draft string, separate from the committed
+  // numeric `value` — otherwise every keystroke would immediately re-clamp
+  // mid-typing (e.g. typing "90" would clamp the intermediate "9" against
+  // a min of 60 and snap it to 60 before the second digit ever lands).
+  // Committing (clamp + propagate via onChange) only happens on blur or
+  // Enter, matching how a typical numeric input field behaves elsewhere.
+  const [draft, setDraft] = useState(String(value));
+
+  // The number starts as plain text (matching the slider's read-only
+  // feel) and only becomes an editable box after a single click —
+  // customer-requested, since an always-visible input box read as a
+  // form field competing with the slider rather than a value label.
+  const [isEditing, setIsEditing] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Keep the draft in sync when `value` changes from outside this input
+  // (slider drag, "Kembalikan ke Default", or another field's change
+  // triggering a parent re-render) — but only while not actively
+  // editing, so an external update never clobbers what's being typed.
+  // This follows React's documented "adjust state during render"
+  // pattern (storing the last-seen value alongside the derived state,
+  // compared during render) rather than an effect-based setState, which
+  // would cost an extra cascading render — and rather than a ref, which
+  // React's stricter lint rules now flag as unsafe to read during render.
+  const [syncedValue, setSyncedValue] = useState(value);
+  if (!isEditing && syncedValue !== value) {
+    setSyncedValue(value);
+    setDraft(String(value));
+  }
+
+  // Autofocus + select-all the moment the box appears, so the very next
+  // keystroke replaces the whole number instead of editing one digit in
+  // place (clicking "68" and typing "90" should overwrite, not append).
+  // This one stays an effect on purpose — focusing a DOM node is exactly
+  // the "synchronize with an external system" case effects are for.
+  useEffect(() => {
+    if (isEditing) {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    }
+  }, [isEditing]);
+
+  function commit() {
+    const parsed = Number(draft);
+    const next = clampToRange(parsed, min, max, step);
+    setDraft(String(next));
+    if (next !== value) onChange(next);
+  }
+
   return (
     <div style={{ marginBottom: "1.1rem" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "0.25rem" }}>
         <label style={{ fontSize: "0.85rem", fontWeight: 600, color: "var(--ink)" }}>{label}</label>
-        <span style={{ fontSize: "0.82rem", color: "var(--ink-faint)", fontFamily: "monospace" }}>
-          {Math.round(value * 100) / 100}
-          {unit}
-        </span>
+        <div style={{ display: "flex", alignItems: "center", gap: "0.3rem" }}>
+          {isEditing ? (
+            <input
+              ref={inputRef}
+              type="number"
+              inputMode="decimal"
+              min={min}
+              max={max}
+              step={step}
+              value={draft}
+              disabled={disabled}
+              onChange={(e) => setDraft(e.target.value)}
+              onBlur={() => {
+                commit();
+                setIsEditing(false);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.currentTarget.blur();
+                } else if (e.key === "Escape") {
+                  setDraft(String(value));
+                  setIsEditing(false);
+                }
+              }}
+              style={{
+                width: "3.6rem",
+                fontSize: "0.82rem",
+                color: "var(--ink-faint)",
+                fontFamily: "monospace",
+                textAlign: "right",
+                background: "var(--card-bg)",
+                border: "1px solid var(--line)",
+                borderRadius: "0.3rem",
+                padding: "0.1rem 0.3rem",
+                opacity: disabled ? 0.5 : 1,
+              }}
+            />
+          ) : (
+            <span
+              role="button"
+              tabIndex={disabled ? -1 : 0}
+              title="Klik untuk ketik angka langsung"
+              onClick={() => {
+                if (!disabled) setIsEditing(true);
+              }}
+              onKeyDown={(e) => {
+                if (!disabled && (e.key === "Enter" || e.key === " ")) {
+                  e.preventDefault();
+                  setIsEditing(true);
+                }
+              }}
+              style={{
+                width: "3.6rem",
+                fontSize: "0.82rem",
+                color: "var(--ink-faint)",
+                fontFamily: "monospace",
+                textAlign: "right",
+                padding: "0.1rem 0.3rem",
+                borderRadius: "0.3rem",
+                border: "1px solid transparent",
+                opacity: disabled ? 0.5 : 1,
+                cursor: disabled ? "default" : "text",
+                userSelect: "none",
+              }}
+            >
+              {draft}
+            </span>
+          )}
+          {unit && (
+            <span style={{ fontSize: "0.82rem", color: "var(--ink-faint)", fontFamily: "monospace" }}>{unit}</span>
+          )}
+        </div>
       </div>
       <input
         type="range"
